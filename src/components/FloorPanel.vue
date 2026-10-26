@@ -174,7 +174,8 @@ const npcTags = computed<Tag[]>(() => {
 const protagonistTags = computed<Tag[]>(() => {
   const protagonist = d.value?.protagonist;
   if (!protagonist) return [];
-  const labels: Record<keyof typeof protagonist, string> = {
+  // 伤情补丁是结构化操作,不在文本字段标签表中展开。
+  const labels: Record<Exclude<keyof typeof protagonist, 'conditionPatch'>, string> = {
     gender: '性别',
     age: '年龄',
     ageTime: '年龄锚点',
@@ -183,7 +184,7 @@ const protagonistTags = computed<Tag[]>(() => {
     outfit: '着装',
     condition: '状态',
   };
-  const parts = (Object.keys(labels) as Array<keyof typeof protagonist>)
+  const parts = (Object.keys(labels) as Array<keyof typeof labels>)
     .filter(key => protagonist[key] !== undefined)
     .map(key => `${labels[key]}:${protagonist[key] || '(清空)'}`);
   if (!parts.length) return [];

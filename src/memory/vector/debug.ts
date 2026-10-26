@@ -8,6 +8,8 @@
 
 import { reactive } from 'vue';
 
+export type RecallQueryMode = 'rewrite' | 'traditional';
+
 /** Embedding 检索命中(后端 max 融合后) */
 export interface RecallDebugEmbedHit {
   leafId: string;
@@ -38,9 +40,11 @@ export interface RecallDebug {
   at: number;
   /** 状态文案:'召回完成' | '进行中…' | '未召回:…' | '失败:…' */
   status: string;
+  /** 记录实际查询模式,避免切换设置后误标上次召回。 */
+  queryMode: RecallQueryMode;
   /** 查询重写的场景意图(兼作 rerank query) */
   intent: string;
-  /** 查询重写产出的多条检索 query */
+  /** 实际检索 query;传统模式仅一条用户输入。 */
   queries: string[];
   embedding: RecallDebugEmbedHit[];
   rerank: RecallDebugRerankHit[];
@@ -49,7 +53,7 @@ export interface RecallDebug {
 }
 
 function empty(): RecallDebug {
-  return { at: 0, status: '', intent: '', queries: [], embedding: [], rerank: [], injectedText: '' };
+  return { at: 0, status: '', queryMode: 'rewrite', intent: '', queries: [], embedding: [], rerank: [], injectedText: '' };
 }
 
 /** 全局召回调试快照。UI 直接订阅;recall.ts 在各阶段写入。 */
@@ -62,8 +66,8 @@ export function previewOf(text: string | null | undefined, max = 80): string {
 }
 
 /** 开一次新召回:清空各阶段、置「进行中」。在 runVectorRecall 进入有效路径后调用。 */
-export function resetRecallDebug(): void {
-  Object.assign(recallDebug, empty(), { at: Date.now(), status: '进行中…' });
+export function resetRecallDebug(queryMode: RecallQueryMode = 'rewrite'): void {
+  Object.assign(recallDebug, empty(), { at: Date.now(), status: '进行中…', queryMode });
 }
 
 /** 仅更新状态文案(各早退路径写明原因,如「未召回:Query 重写未配置」)。 */
@@ -72,7 +76,7 @@ export function setRecallStatus(status: string): void {
   if (!recallDebug.at) recallDebug.at = Date.now();
 }
 
-export function setRecallRewrite(intent: string, queries: string[]): void {
+export function setRecallQueries(intent: string, queries: string[]): void {
   recallDebug.intent = intent;
   recallDebug.queries = [...queries];
 }

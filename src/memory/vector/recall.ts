@@ -1,12 +1,12 @@
 /**
- * 阻塞式向量召回:生成主回复前,按用户输入 + 近期上下文检索相关旧记忆,注入主对话。
+ * 阻塞式向量召回:生成主回复前,按重写查询或本轮用户输入检索相关旧记忆,注入主对话。
  *
  * 管线(全程阻塞,对齐既定方案,不做预取/异步):
- *  1. 查询重写(开关开 + 配了 Query 重写模型时):小模型把当前剧情重写成 INTENT + 多条检索 Q;
- *     失败/未启用则降级为「最近上下文当单条 query」。
- *  2. 各 query 各自 embed → vec/search(scopes = 当前 chat + 各 bundle,后端多路 RRF 融合),
+ *  1. 默认重写为 INTENT + 多条检索 Q;传统模式直接采用本轮用户输入,跳过重写。
+ *     重写失败则结束本轮召回;传统模式无有效用户输入也跳过。
+ *  2. 各 query 各自 embed → vec/search(scopes = 当前 chat + 各 bundle,后端多路 max 融合),
  *     纯按 embedding 得分取前 rerankCandidates 条(不套阈值)。
- *  3. rerank 候选(用 INTENT 作 query;渠道未配则降级:跳过 rerank,用 embedding 序)。
+ *  3. rerank 候选(用 INTENT 或用户输入作 query;渠道未配则降级:跳过 rerank,用 embedding 序)。
  *  4. 分档:全文档(rerank≥阈值,取前 fullTextCount,发原文 mes_full)/ 摘要档(embedding≥阈值,发 document)。
  *  5. 按 leaf_id 去重 + 排除当前窗口内已全文的叶子 → 拼注入文本 → setExtensionPrompt。
  *
@@ -35,11 +35,12 @@ import {
   setRecallEmbedding,
   setRecallInjected,
   setRecallRerank,
-  setRecallRewrite,
+  setRecallQueries,
   setRecallStatus,
   snapshotRecallDebug,
   type RecallDebug,
   type RecallDebugRerankHit,
+  type RecallQueryMode,
 } from './debug';
 
 // 注入槽位:贴近历史摘要层(顶部附近),与 inject.ts 的历史摘要同一区域但独立 key。
@@ -113,10 +114,10 @@ function fnv1a(text: string): string {
  * 召回结果缓存:重新生成 / 翻页(swipe)时召回输入一字不变,直接复用上次结果,
  * 省掉重写+embed+search+rerank 的额度与时间。只存「最近一次」一条,key 不匹配即覆盖。
  *
- * key = chatId | 最新user楼层号 | hash(最新user文本) | hash(上一条AI文本) | 召回参数指纹
+ * key = chatId | 最新user楼层号 | hash(最新user文本) | hash(上一条AI文本) | 查询模式 | 召回参数指纹
  *  - 带 user 文本 hash:编辑最新输入后重生成,楼层号没变但内容变了,靠它失效(否则错误复用)。
  *  - 带 AI 文本 hash:编辑上一条 AI 楼后重生成,靠它失效。
- *  - 带召回参数指纹:rerank/embedding 阈值、条数等任一改动则失效;只改别的设置(渠道/开关)不失效。
+ *  - 带查询模式和召回参数指纹:模式、阈值、条数等任一改动则失效;只改渠道不失效。
  *  - 带 chatId:换聊天后楼层号/哈希偶然相同也不跨聊天误命中。
  */
 interface RecallCache {
@@ -160,6 +161,20 @@ function recallParamFingerprint(cfg: typeof apiSettings.vector.recall): string {
   ].join(',');
 }
 
+interface RecallUserInput {
+  index: number;
+  text: string;
+}
+
+/** 从已发送消息取最新用户楼,重生成/翻页时末尾常是待替换的 AI 楼。 */
+function latestUserInput(chat: STMessage[]): RecallUserInput | null {
+  for (let i = chat.length - 1; i >= 0; i--) {
+    const m = chat[i];
+    if (m?.is_user && !m.is_system) return { index: i, text: m.mes ?? '' };
+  }
+  return null;
+}
+
 /**
  * 构造当前轮的缓存 key。取「最新 user 楼层」需从后往前扫第一条 is_user——
  * 重生成时末尾可能是待替换的 AI 楼/系统楼,直接取 chat[length-1] 会取错。
@@ -168,20 +183,16 @@ function recallParamFingerprint(cfg: typeof apiSettings.vector.recall): string {
  *    取了它缓存永不命中、白做。取 user 之前的稳定 AI 楼才对。
  * 缺 chatId 或无 user 楼 → 返回 null,本轮不走缓存(照常实算)。
  */
-function buildRecallCacheKey(chat: STMessage[], cfg: typeof apiSettings.vector.recall): string | null {
+function buildRecallCacheKey(
+  chat: STMessage[],
+  cfg: typeof apiSettings.vector.recall,
+  queryMode: RecallQueryMode,
+  userInput: RecallUserInput | null,
+): string | null {
   const chatId = currentChatId();
-  if (!chatId) return null;
+  if (!chatId || !userInput) return null;
 
-  let userIdx = -1;
-  for (let i = chat.length - 1; i >= 0; i--) {
-    if (chat[i]?.is_user) {
-      userIdx = i;
-      break;
-    }
-  }
-  if (userIdx < 0) return null;
-
-  const userText = chat[userIdx]?.mes ?? '';
+  const { index: userIdx, text: userText } = userInput;
   let aiText = '';
   for (let i = userIdx - 1; i >= 0; i--) {
     if (isAiFloor(chat[i])) {
@@ -190,7 +201,7 @@ function buildRecallCacheKey(chat: STMessage[], cfg: typeof apiSettings.vector.r
     }
   }
 
-  return `${chatId}|${userIdx}|${fnv1a(userText)}|${fnv1a(aiText)}|${recallParamFingerprint(cfg)}`;
+  return `${chatId}|${userIdx}|${fnv1a(userText)}|${fnv1a(aiText)}|${queryMode}|${recallParamFingerprint(cfg)}`;
 }
 
 let recalling = false;
@@ -229,7 +240,19 @@ export async function runVectorRecall(signal?: AbortSignal): Promise<void> {
   const ctx = getContext();
   const chat = ctx?.chat ?? [];
   const fn = ctx?.setExtensionPrompt;
-  if (typeof fn !== 'function' || !chat.length) return;
+  if (typeof fn !== 'function') return;
+
+  // 模式和输入在 await 前固定,避免索引等待期间的设置/正文变化污染缓存。
+  const queryMode: RecallQueryMode = apiSettings.vector.traditionalMode === true ? 'traditional' : 'rewrite';
+  const userInput = latestUserInput(chat);
+  const userQuery = userInput?.text.trim() || '';
+  if (queryMode === 'traditional' && !userQuery) {
+    resetRecallDebug(queryMode);
+    setRecallStatus(userInput ? '未召回:本轮用户输入为空' : '未召回:无用户输入');
+    clearRecallInjection();
+    return;
+  }
+  if (!chat.length) return;
 
   // 楼层还少 / 全在窗口内且无旧档:本回合无召回价值,跳过整条管线(清空注入槽,避免残留上次召回)。
   if (!recallWorthRunning(chat)) {
@@ -238,11 +261,11 @@ export async function runVectorRecall(signal?: AbortSignal): Promise<void> {
     return;
   }
 
-  const cfg = apiSettings.vector.recall;
+  const cfg = { ...apiSettings.vector.recall };
   const scopes = recallScopes();
 
   // 缓存命中(重生成/翻页且召回输入未变):直接复用上次注入文本 + 调试快照,跳过整条管线。
-  const cacheKey = buildRecallCacheKey(chat, cfg);
+  const cacheKey = buildRecallCacheKey(chat, cfg, queryMode, userInput);
   const cached = cacheKey ? loadRecallCache() : null;
   if (cacheKey && cached && cached.key === cacheKey) {
     fn(RECALL_INJECT_KEY, cached.text, IN_CHAT, recallInjectionDepth(), false, ROLE_SYSTEM, null);
@@ -254,17 +277,16 @@ export async function runVectorRecall(signal?: AbortSignal): Promise<void> {
   recalling = true;
   try {
     // 开一次新调试快照(进入有效召回路径才记录,避免「功能未启用」时反复清空上次结果)
-    resetRecallDebug();
+    resetRecallDebug(queryMode);
 
     // 召回前先补齐窗口外缺失的向量索引(载入老聊天/向量后开 → 旧叶子可能从未索引),
     // 否则这些旧剧情会直接漏召回。只阻塞窗口外,窗口内交给防抖增量。
     await ensureRecallIndex(signal);
 
-    // 1) 查询重写(强制启用,无降级):得多条 query 向量 + rerank 用的 query 文本。
-    // 重写失败/无 query 会抛错 → 落到外层 catch,清空注入槽、结束本次召回。
-    const { queryVectors, rerankQuery } = await resolveQueryVectors(signal);
+    // 1) 按固定模式生成查询;重写失败不切换模式,交给外层 catch 结束本轮召回。
+    const { queryVectors, rerankQuery } = await resolveQueryVectors(queryMode, userQuery, signal);
     if (!queryVectors.length) {
-      setRecallStatus('未召回:查询重写未产出 query');
+      setRecallStatus('未召回:未生成查询向量');
       clearRecallInjection();
       return;
     }
@@ -292,7 +314,7 @@ export async function runVectorRecall(signal?: AbortSignal): Promise<void> {
       return;
     }
 
-    // 3) rerank(用 INTENT/重写 query;渠道未配 → 降级:用 embedding 序,score 复用 similarity)
+    // 3) rerank(用 INTENT/首条 Q 或用户输入;渠道未配 → 降级:用 embedding 序,score 复用 similarity)
     const ranked = await rerankCandidates(rerankQuery, results, signal);
 
     // 4) 分档 + 上限(now = 故事内最新时间,作相对时间参照点,对齐历史摘要注入)
@@ -338,15 +360,18 @@ function recordRerankDebug(
 }
 
 /**
- * 解析检索用的多条 query 向量 + rerank 用的 query 文本。
- * 查询重写**强制启用、无降级**:rewrite 得 INTENT + 多条 Q,各自 embed;rerank query 用 INTENT(无则首条 Q)。
- * 重写失败 / 无 query → 直接抛错,由 runVectorRecall 结束本次召回(不再降级为单 query)。
+ * 两种模式共用向量化和重排:传统模式保留完整用户输入,不套重写的清洗/限长。
+ * 重写模式保留 INTENT + 多条 Q;失败抛错,由 runVectorRecall 结束本次召回。
  */
 async function resolveQueryVectors(
+  queryMode: RecallQueryMode,
+  userQuery: string,
   signal?: AbortSignal,
 ): Promise<{ queryVectors: string[]; rerankQuery: string }> {
-  const { intent, queries } = await rewriteQuery(signal);
-  setRecallRewrite(intent, queries);
+  const { intent, queries } = queryMode === 'traditional'
+    ? { intent: '', queries: [userQuery] }
+    : await rewriteQuery(signal);
+  setRecallQueries(intent, queries);
   if (!queries.length) throw new Error('查询重写未产出任何 query');
   // 检索向量:多条 Q(INTENT 偏长偏全文,留给 rerank,不进检索向量以免稀释)
   const vecs = await embedTexts(queries, signal);

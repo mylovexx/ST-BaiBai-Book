@@ -332,6 +332,9 @@ const VECTOR_ROLES: VectorRoleMeta[] = [
   { key: 'rerank', label: 'Rerank(重排)' },
   { key: 'queryRewrite', label: 'Query 重写' },
 ];
+const visibleVectorRoles = computed(() => VECTOR_ROLES.filter(
+  role => role.key !== 'queryRewrite' || !apiSettings.vector.traditionalMode,
+));
 
 /* —— 向量端点:每角色直接填 地址/密钥/模型;模型可一键拉取(combobox)。 —— */
 const vecShowKey = ref<Record<VectorRole, boolean>>({ embedding: false, rerank: false, queryRewrite: false });
@@ -1189,13 +1192,23 @@ function exportPublicApiDocument() {
           <span class="bbs-field-label">启用向量记忆</span>
           <input v-model="apiSettings.vector.enabled" type="checkbox" class="bbs-checkbox" />
         </label>
+        <label class="bbs-switch-row">
+          <span class="bbs-field-label">传统向量</span>
+          <input
+            v-model="apiSettings.vector.traditionalMode"
+            type="checkbox"
+            class="bbs-checkbox"
+            :disabled="!apiSettings.vector.enabled"
+          />
+        </label>
+        <p class="bbs-field-hint">开启后直接用本轮用户输入检索,跳过 Query 重写;仍保留重排与全文 / 摘要分档。</p>
 
         <hr class="bbs-rule bbs-vec-enable-rule" />
 
         <!-- 三个端点:Embedding 必填;Rerank/Query 地址留空 = 整体复用 Embedding。
              卡片自身可折叠(点标题栏),无额外外框;副标显当前模型,收起也看得出配没配。 -->
         <div
-          v-for="role in VECTOR_ROLES"
+          v-for="role in visibleVectorRoles"
           :key="role.key"
           class="bbs-vec-ep"
           :class="{ 'is-disabled': !apiSettings.vector.enabled, 'is-collapsed': !vecEpOpen[role.key] }"
@@ -1492,7 +1505,7 @@ function exportPublicApiDocument() {
         <!-- 上次召回详情:把上一次召回各阶段的中间结果可视化,便于调参/排障(reactive 自动刷新) -->
         <Collapsible title="上次召回详情" :open="false">
           <p v-if="!recallDebug.at" class="bbs-field-hint">
-            尚无召回记录。配好向量渠道后发一条消息触发召回,这里会显示重写 / 检索 / 重排 / 注入各阶段结果。
+            尚无召回记录。配好向量渠道后发一条消息触发召回,这里会显示查询 / 检索 / 重排 / 注入各阶段结果。
           </p>
           <div v-else class="bbs-dbg">
             <!-- 状态横幅:左侧圆点按语气配色,右侧时间 -->
@@ -1503,7 +1516,8 @@ function exportPublicApiDocument() {
             </div>
 
             <!-- 四阶段各自可折叠,默认收起;标题带计数 -->
-            <Collapsible :title="`1 · 查询重写 · ${recallDebug.queries.length} Q`" :open="false">
+            <Collapsible :title="`1 · ${recallDebug.queryMode === 'traditional' ? '传统向量' : '查询重写'} · ${recallDebug.queries.length} Q`" :open="false">
+              <p v-if="recallDebug.queryMode === 'traditional'" class="bbs-field-hint">查询来源:本轮用户输入。</p>
               <p v-if="recallDebug.intent" class="bbs-dbg-intent">
                 <span class="bbs-dbg-tag">INTENT</span><span class="bbs-dbg-intent-text">{{ recallDebug.intent }}</span>
               </p>
@@ -2427,7 +2441,7 @@ function exportPublicApiDocument() {
   gap: 12px;
   padding: 8px 0;
 }
-/* 「启用向量记忆」是折叠区里独一行开关,不再额外加上 padding,贴合标题节奏 */
+/* 首行开关收掉上边距,贴合折叠区标题节奏 */
 .bbs-vec-enable {
   padding-top: 0;
 }

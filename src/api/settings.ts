@@ -113,6 +113,8 @@ export interface VectorRecallSettings {
 export interface VectorSettings {
   /** 向量记忆开关 */
   enabled: boolean;
+  /** 传统向量直接用本轮用户输入查询,省去模型重写。默认关。 */
+  traditionalMode: boolean;
   /** 文本向量化端点(基准,必填) */
   embedding: VectorEndpoint;
   /** 重排端点;url 留空复用 embedding */
@@ -322,6 +324,7 @@ function defaults(): ApiSettings {
     verbosity: 'detailed',
     vector: {
       enabled: false,
+      traditionalMode: false,
       // 默认填硅基流动地址 + 各角色模型,用户只需在 embedding 填一次 key 即可跑通:
       // rerank/queryRewrite 的 url/key 留空会回落复用 embedding 的(见 resolveVectorModel)。
       embedding: { url: 'https://api.siliconflow.cn/v1', key: '', model: 'Qwen/Qwen3-Embedding-8B', timeoutSec: 10, retries: 1 },
@@ -429,6 +432,7 @@ function normalize(raw: unknown): ApiSettings {
   merged.vector = {
     ...d.vector,
     ...rv,
+    traditionalMode: typeof rv.traditionalMode === 'boolean' ? rv.traditionalMode : d.vector.traditionalMode,
     embedding: normalizeVectorEndpoint(rv.embedding, d.vector.embedding),
     rerank: normalizeVectorEndpoint(rv.rerank, d.vector.rerank),
     queryRewrite: normalizeVectorEndpoint(rv.queryRewrite, d.vector.queryRewrite),
