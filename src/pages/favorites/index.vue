@@ -2,13 +2,15 @@
 import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue';
 import Icon from '@/components/Icon.vue';
 import FavoriteEditor from '@/components/FavoriteEditor.vue';
+import ForcedRecallButton from '@/components/ForcedRecallButton.vue';
+import ForcedRecallHistory from '@/components/ForcedRecallHistory.vue';
 import { captureFavoriteTarget, EXTRA_TAG, MILESTONE_TAG, favorites, favoriteBody, favoriteSaving, favoriteTargetCurrent, readFavorite, removeFavorite, type FavoriteTarget, type FavoriteView } from '@/favorites/store';
 import { derivedMeta, recomputeDerived } from '@/memory/store';
 import { closeBook } from '@/state/ui';
 import { getContext, jumpToFloor } from '@/st/context';
 import { toast } from '@/st/toast';
 
-type Filter = { kind: 'all' } | { kind: 'untagged' } | { kind: 'tag'; tag: string };
+type Filter = { kind: 'all' } | { kind: 'untagged' } | { kind: 'tags'; tags: string[] };
 const filter = ref<Filter>({ kind: 'all' });
 const editing = shallowRef<FavoriteTarget | null>(null);
 const preview = shallowRef<FavoriteTarget | null>(null);
@@ -23,16 +25,27 @@ const tagCounts = computed(() => {
 const untaggedCount = computed(() => favorites.value.filter(row => !row.tags.length).length);
 watch(tagCounts, counts => {
   const selected = filter.value;
-  if (selected.kind === 'tag' && !counts.some(([tag]) => tag === selected.tag)) filter.value = { kind: 'all' };
+  if (selected.kind !== 'tags') return;
+  const available = new Set(counts.map(([tag]) => tag));
+  const tags = selected.tags.filter(tag => available.has(tag));
+  if (tags.length !== selected.tags.length) filter.value = tags.length ? { kind: 'tags', tags } : { kind: 'all' };
 });
 const filtered = computed(() => {
   const selected = filter.value;
-  return favorites.value.filter(row => selected.kind === 'all' || (selected.kind === 'untagged' ? !row.tags.length : row.tags.includes(selected.tag)));
+  return favorites.value.filter(row => selected.kind === 'all' || (selected.kind === 'untagged'
+    ? !row.tags.length
+    : selected.tags.every(tag => row.tags.includes(tag))));
 });
 const previewBody = computed(() => {
   void derivedMeta.rev;
   return preview.value && favoriteTargetCurrent(preview.value) ? favoriteBody(preview.value.message) : '';
 });
+
+function toggleTag(tag: string) {
+  const selected = filter.value.kind === 'tags' ? filter.value.tags : [];
+  const tags = selected.includes(tag) ? selected.filter(value => value !== tag) : [...selected, tag];
+  filter.value = tags.length ? { kind: 'tags', tags } : { kind: 'all' };
+}
 
 function summaryHint(row: FavoriteView): string {
   return row.summaryState === 'missing' ? '该楼层暂无摘要'
@@ -104,16 +117,19 @@ onUnmounted(() => unbind.forEach(off => off()));
       <h2 class="bbs-title bbs-title-sub">收藏</h2>
       <span class="bbs-favorites-count">当前聊天 · {{ favorites.length }} 个楼层</span>
     </header>
-    <nav class="bbs-favorites-filters" aria-label="按收藏标签筛选">
+    <ForcedRecallHistory />
+    <nav class="bbs-favorites-filters" aria-label="按收藏标签筛选（可多选）">
       <button class="bbs-btn" :class="{ 'is-selected': filter.kind === 'all' }" type="button" :aria-pressed="filter.kind === 'all'" @click="filter = { kind: 'all' }">全部 {{ favorites.length }}</button>
       <button class="bbs-btn" :class="{ 'is-selected': filter.kind === 'untagged' }" type="button" :aria-pressed="filter.kind === 'untagged'" @click="filter = { kind: 'untagged' }">未分类 {{ untaggedCount }}</button>
-      <button v-for="[tag, count] in tagCounts" :key="tag" class="bbs-btn" :class="{ 'is-selected': filter.kind === 'tag' && filter.tag === tag }" type="button" :aria-pressed="filter.kind === 'tag' && filter.tag === tag" @click="filter = { kind: 'tag', tag }">{{ tag }} {{ count }}</button>
+      <button v-for="[tag, count] in tagCounts" :key="tag" class="bbs-btn" :class="{ 'is-selected': filter.kind === 'tags' && filter.tags.includes(tag) }" type="button" :aria-pressed="filter.kind === 'tags' && filter.tags.includes(tag)" @click="toggleTag(tag)">{{ tag }} {{ count }}</button>
+      <span v-if="tagCounts.length" class="bbs-favorites-filter-hint">标签可多选，显示同时包含所有选中标签的收藏。</span>
     </nav>
     <div v-if="filtered.length" class="bbs-favorites-list">
       <article v-for="row in filtered" :key="row.floor" class="bbs-summary-card bbs-favorite-card">
         <header class="bbs-favorite-head">
           <span class="bbs-summary-loc">#{{ row.floor }}</span>
           <h3 class="bbs-favorite-title">{{ row.title }}</h3>
+          <ForcedRecallButton class="bbs-favorite-force" :floor="row.floor" :disabled="actionDisabled" />
         </header>
         <div class="bbs-favorite-tags">
           <span v-for="tag in row.tags" :key="tag" class="bbs-favorite-tag">{{ tag }}</span>
@@ -134,7 +150,7 @@ onUnmounted(() => unbind.forEach(off => off()));
     </div>
     <div v-else class="bbs-empty">
       <Icon name="favorites" class="bbs-empty-icon" />
-      <p>{{ favorites.length ? '这个分类暂无收藏。' : '当前聊天还没有收藏。开启设置中的「楼层界面」，点击楼层上的收藏按钮即可添加。' }}</p>
+      <p>{{ favorites.length ? '暂无符合当前筛选条件的收藏。' : '当前聊天还没有收藏。开启设置中的「楼层界面」，点击楼层上的收藏按钮即可添加。' }}</p>
     </div>
   </section>
 </template>
@@ -145,10 +161,12 @@ onUnmounted(() => unbind.forEach(off => off()));
 .bbs-favorites-filters { display: flex; flex-wrap: wrap; gap: 7px; margin: 16px 0; }
 .bbs-favorites-filters .bbs-btn { padding: 6px 10px; white-space: normal; overflow-wrap: anywhere; }
 .bbs-favorites-filters .is-selected { color: var(--bbs-accent); border-color: var(--bbs-accent); background: var(--bbs-accent-soft); }
+.bbs-favorites-filter-hint { flex-basis: 100%; color: var(--bbs-ink-muted); font-size: 12px; }
 .bbs-favorites-list { display: grid; gap: 12px; }
 .bbs-favorite-card { min-width: 0; }
-.bbs-favorite-head { display: flex; align-items: baseline; gap: 10px; }
+.bbs-favorite-head { display: flex; align-items: center; gap: 10px; }
 .bbs-favorite-title { min-width: 0; margin: 0; font-size: 15px; font-weight: 600; color: var(--bbs-ink); overflow-wrap: anywhere; }
+.bbs-favorite-force { margin-left: auto; }
 .bbs-favorite-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .bbs-favorite-tag { padding: 3px 7px; border-radius: var(--bbs-radius-sm); background: var(--bbs-surface-2); color: var(--bbs-ink-soft); font-size: 11px; overflow-wrap: anywhere; }
 .bbs-favorite-excerpt { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; margin: 10px 0; color: var(--bbs-ink-soft); font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }

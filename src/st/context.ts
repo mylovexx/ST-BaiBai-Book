@@ -22,6 +22,9 @@ export interface STMessage {
     bbs_hidden?: boolean;
     bbs_omit?: boolean;
     bbs_favorite?: import('@/favorites/store').FavoriteExtra;
+    /** 强制注入引用物理楼层,不能用会随删楼移动的数组下标。 */
+    bbs_force_id?: string;
+    bbs_forced_recall?: import('@/memory/forcedRecall').ForcedRecallRound;
     bbs_internal_notice?: 'backlog';
   };
 }

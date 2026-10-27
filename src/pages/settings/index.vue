@@ -1350,7 +1350,7 @@ function exportPublicApiDocument() {
 
         <!-- 召回参数:机制说明 + 进阶旋钮整体折叠,默认收起,不淹没上方端点配置。 -->
         <Collapsible title="召回参数" :open="false">
-          <div class="bbs-vec-recall" :class="{ 'is-disabled': !apiSettings.vector.enabled }">
+          <div class="bbs-vec-recall">
             <p class="bbs-field-hint">
               先对全部向量索引算 embedding 相似度,取得分最高的若干条进入 rerank;rerank 打分后分两档:
               得分高的发原文全文,稍低但仍过 embedding 阈值的发摘要;两档合计不超过「最终召回条数」。
@@ -1363,17 +1363,16 @@ function exportPublicApiDocument() {
             </p>
 
           <label class="bbs-num-row">
-            <span class="bbs-field-label">召回注入深度</span>
+            <span class="bbs-field-label">召回 / 强制注入深度</span>
             <input
               v-model.number="apiSettings.vector.recall.injectionDepth"
               class="bbs-input bbs-num"
               type="number"
               min="0"
               step="1"
-              :disabled="!apiSettings.vector.enabled"
             />
           </label>
-          <p class="bbs-field-hint">召回内容注入到聊天中的深度。0 = D0,最贴近最新用户输入;数字越大越靠前。</p>
+          <p class="bbs-field-hint">向量召回与手动强制注入共用此深度,向量关闭时仍可调整。0 = D0,最贴近最新用户输入;数字越大越靠前。</p>
 
           <label class="bbs-num-row">
             <span class="bbs-field-label">Rerank 候选数</span>
@@ -1505,7 +1504,7 @@ function exportPublicApiDocument() {
         <!-- 上次召回详情:把上一次召回各阶段的中间结果可视化,便于调参/排障(reactive 自动刷新) -->
         <Collapsible title="上次召回详情" :open="false">
           <p v-if="!recallDebug.at" class="bbs-field-hint">
-            尚无召回记录。配好向量渠道后发一条消息触发召回,这里会显示查询 / 检索 / 重排 / 注入各阶段结果。
+            尚无召回记录。向量召回或手动强制注入后,这里会显示实际使用的内容及跳过原因。
           </p>
           <div v-else class="bbs-dbg">
             <!-- 状态横幅:左侧圆点按语气配色,右侧时间 -->
@@ -1561,7 +1560,21 @@ function exportPublicApiDocument() {
               <p v-else class="bbs-dbg-empty">无(rerank 未执行或无候选)</p>
             </Collapsible>
 
-            <Collapsible title="4 · 最终注入" :open="false">
+            <Collapsible :title="`4 · 强制注入 · ${recallDebug.forced.length} 条选择`" :open="false">
+              <ul v-if="recallDebug.forced.length" class="bbs-dbg-cards">
+                <li v-for="h in recallDebug.forced" :key="h.messageId" class="bbs-dbg-card" :class="{ 'is-dropped': h.reason }">
+                  <div class="bbs-dbg-card-top">
+                    <span class="bbs-dbg-from">{{ h.source }}</span>
+                    <span class="bbs-dbg-tier">强制{{ h.mode === 'full' ? '原文' : '摘要' }}</span>
+                    <span v-if="h.reason" class="bbs-field-hint">跳过:{{ h.reason }}</span>
+                    <span v-else class="bbs-field-hint">已注入</span>
+                  </div>
+                  <p class="bbs-dbg-prev">{{ h.preview }}</p>
+                </li>
+              </ul>
+              <p v-else class="bbs-dbg-empty">本轮无手动选择。</p>
+            </Collapsible>
+            <Collapsible title="5 · 最终注入" :open="false">
               <pre v-if="recallDebug.injectedText" class="bbs-dbg-pre">{{ recallDebug.injectedText }}</pre>
               <p v-else class="bbs-dbg-empty">本回合未注入。</p>
             </Collapsible>
@@ -2583,7 +2596,7 @@ function exportPublicApiDocument() {
 .bbs-vec-ep.is-disabled {
   opacity: 0.5;
 }
-/* 召回参数/索引维护整组在关闭向量记忆时一并置灰 */
+/* 索引维护在关闭向量记忆时整组置灰;共享注入深度仍可编辑。 */
 .bbs-vec-recall.is-disabled {
   opacity: 0.5;
 }

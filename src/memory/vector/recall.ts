@@ -14,6 +14,7 @@
  */
 
 import { getContext, type STMessage } from '@/st/context';
+import { toast } from '@/st/toast';
 import { apiSettings, engineActiveHere } from '@/api/settings';
 import type { VecHit } from '@/api/baibaoku';
 import { vecSearch } from './store';
@@ -28,12 +29,15 @@ import { cleanBody, compactTimeLabel, latestStoryTime, splitTimeLabel } from '..
 import { relativeTimeLabel } from '../timeRel';
 import { normalizeRecallInjectionDepth } from './depth';
 import { RECALL_CACHE_STORAGE_KEY } from './cache';
+import { forcedRecallRunning, forcedRecallRoundCurrent, inspectForcedRecall, latestForcedRecallUser,
+  prepareForcedRecallRound, type ForcedRecallItem, type ForcedRecallRound } from '../forcedRecall';
 import {
   previewOf,
   resetRecallDebug,
   restoreRecallDebug,
   setRecallEmbedding,
   setRecallInjected,
+  setRecallForced,
   setRecallRerank,
   setRecallQueries,
   setRecallStatus,
@@ -59,7 +63,7 @@ function recallInjectionDepth(): number {
  *  - 否则(bundle:<hash>)→ 来自「带数据建新对话」冻结的旧聊天快照,显示「旧档」。
  * 旧聊天的真实名字/楼层号未追踪(bundle 只存 hash),故统一标「旧档」让用户知道非本聊天。
  */
-function sourceLabel(hit: VecHit, selfScope: string | null): string {
+function sourceLabel(hit: Pick<VecHit, 'scope' | 'msgIndex'>, selfScope: string | null): string {
   if (selfScope && hit.scope === selfScope) {
     return typeof hit.msgIndex === 'number' && hit.msgIndex >= 0 ? `#${hit.msgIndex}` : '本聊天';
   }
@@ -158,6 +162,7 @@ function recallParamFingerprint(cfg: typeof apiSettings.vector.recall): string {
     cfg.rerankThreshold,
     cfg.fullTextCount,
     cfg.finalRecallCount,
+    JSON.stringify(apiSettings.customStripTags),
   ].join(',');
 }
 
@@ -188,6 +193,7 @@ function buildRecallCacheKey(
   cfg: typeof apiSettings.vector.recall,
   queryMode: RecallQueryMode,
   userInput: RecallUserInput | null,
+  forcedFingerprint = '',
 ): string | null {
   const chatId = currentChatId();
   if (!chatId || !userInput) return null;
@@ -201,7 +207,7 @@ function buildRecallCacheKey(
     }
   }
 
-  return `${chatId}|${userIdx}|${fnv1a(userText)}|${fnv1a(aiText)}|${queryMode}|${recallParamFingerprint(cfg)}`;
+  return `${chatId}|${userIdx}|${fnv1a(userText)}|${fnv1a(aiText)}|${queryMode}|${recallParamFingerprint(cfg)}|${forcedFingerprint}`;
 }
 
 let recalling = false;
@@ -226,58 +232,90 @@ export function clearRecallInjection(): void {
 
 /**
  * 执行一次阻塞召回并写注入槽。在生成拦截器放行路径里 await。
- * 任何失败都清空槽并返回(静默降级)。
+ * 向量失败仅丢弃向量部分,手动选择仍通过同一槽位注入。
  */
 export async function runVectorRecall(signal?: AbortSignal): Promise<void> {
-  if (!recallActiveHere()) {
+  if (!engineActiveHere()) {
     clearRecallInjection();
     return;
   }
   if (recalling) return;
-  const database = currentVectorDb();
-  if (!database) return;
-
   const ctx = getContext();
   const chat = ctx?.chat ?? [];
   const fn = ctx?.setExtensionPrompt;
-  if (typeof fn !== 'function') return;
+  if (!ctx || typeof fn !== 'function') return;
 
   // 模式和输入在 await 前固定,避免索引等待期间的设置/正文变化污染缓存。
   const queryMode: RecallQueryMode = apiSettings.vector.traditionalMode === true ? 'traditional' : 'rewrite';
   const userInput = latestUserInput(chat);
   const userQuery = userInput?.text.trim() || '';
-  if (queryMode === 'traditional' && !userQuery) {
-    resetRecallDebug(queryMode);
-    setRecallStatus(userInput ? '未召回:本轮用户输入为空' : '未召回:无用户输入');
-    clearRecallInjection();
-    return;
-  }
-  if (!chat.length) return;
-
-  // 楼层还少 / 全在窗口内且无旧档:本回合无召回价值,跳过整条管线(清空注入槽,避免残留上次召回)。
-  if (!recallWorthRunning(chat)) {
-    setRecallStatus('未召回:楼层未达起召门槛或全在窗口内');
-    clearRecallInjection();
-    return;
-  }
-
   const cfg = { ...apiSettings.vector.recall };
-  const scopes = recallScopes();
-
-  // 缓存命中(重生成/翻页且召回输入未变):直接复用上次注入文本 + 调试快照,跳过整条管线。
-  const cacheKey = buildRecallCacheKey(chat, cfg, queryMode, userInput);
-  const cached = cacheKey ? loadRecallCache() : null;
-  if (cacheKey && cached && cached.key === cacheKey) {
-    fn(RECALL_INJECT_KEY, cached.text, IN_CHAT, recallInjectionDepth(), false, ROLE_SYSTEM, null);
-    restoreRecallDebug(cached.debug);
-    setRecallStatus(`${cached.debug.status}(复用缓存)`);
-    return;
-  }
-
+  const chatId = currentChatId();
+  const user = latestForcedRecallUser(chat);
+  const selfScope = currentChatScope();
+  let round: ForcedRecallRound | null = null;
+  let prepared = false;
+  let fingerprint = '';
+  const itemsNow = (): ForcedRecallItem[] => (round?.entries ?? []).map(entry =>
+    inspectForcedRecall(entry, chat, user ? chat.indexOf(user) + 1 : chat.length));
+  const fingerprintOf = (items: ForcedRecallItem[]) => JSON.stringify([round?.roundId ?? '', items]);
+  const current = () => getContext()?.chat === chat && currentChatId() === chatId
+    && latestForcedRecallUser(chat) === user && engineActiveHere() && !signal?.aborted;
+  const finish = (status: string, vectorChunks: string[] = []): { text: string; stable: boolean } | null => {
+    if (!current() || !forcedRecallRoundCurrent(round, ctx)) {
+      clearRecallInjection();
+      setRecallInjected('');
+      setRecallStatus(signal?.aborted ? '已取消召回' : '未注入:聊天或轮次已变化');
+      return null;
+    }
+    const items = itemsNow();
+    const stable = fingerprintOf(items) === fingerprint;
+    // await 期间源楼可能翻页、删除或改成番外,旧向量结果不能继续合并。
+    if (!stable && vectorChunks.length) {
+      vectorChunks = [];
+      status = '向量未注入:来源已变化';
+    }
+    const valid = items.filter(item => !item.reason);
+    const now = latestStoryTime(chat);
+    const forcedChunks = valid.map(item => fmtChunk({ scope: selfScope ?? '', msgIndex: item.floor,
+      storyTime: item.storyTime }, item.body, item.mode === 'full', selfScope, now));
+    const text = wrapRecallText(forcedChunks, vectorChunks);
+    setRecallForced(items.map(item => ({ messageId: item.messageId, source: item.floor >= 0 ? `#${item.floor}` : '失效楼层',
+      mode: item.mode, preview: previewOf(item.body), reason: item.reason })));
+    fn(RECALL_INJECT_KEY, text, IN_CHAT, recallInjectionDepth(), false, ROLE_SYSTEM, null);
+    setRecallInjected(text);
+    setRecallStatus(valid.length ? `${status.replace(',本回合未注入', '')};强制注入 ${valid.length} 条` : status);
+    return { text, stable };
+  };
   recalling = true;
+  forcedRecallRunning.value = true;
   try {
-    // 开一次新调试快照(进入有效召回路径才记录,避免「功能未启用」时反复清空上次结果)
     resetRecallDebug(queryMode);
+    round = await prepareForcedRecallRound();
+    prepared = true;
+    fingerprint = fingerprintOf(itemsNow());
+    if (!current()) { finish('未注入:聊天或轮次已变化'); return; }
+    if (!recallActiveHere()) { finish('向量未召回:未启用或未配置'); return; }
+    const database = currentVectorDb();
+    if (!database) { finish('向量未召回:未配置数据库'); return; }
+    if (queryMode === 'traditional' && !userQuery) {
+      finish(userInput ? '未召回:本轮用户输入为空' : '未召回:无用户输入');
+      return;
+    }
+    if (!chat.length) { finish('未召回:聊天为空'); return; }
+    if (!recallWorthRunning(chat)) {
+      finish('未召回:楼层未达起召门槛或全在窗口内');
+      return;
+    }
+    const scopes = recallScopes();
+    const cacheKey = buildRecallCacheKey(chat, cfg, queryMode, userInput, fnv1a(fingerprint));
+    const cached = cacheKey ? loadRecallCache() : null;
+    if (cacheKey && cached && cached.key === cacheKey) {
+      fn(RECALL_INJECT_KEY, cached.text, IN_CHAT, recallInjectionDepth(), false, ROLE_SYSTEM, null);
+      restoreRecallDebug(cached.debug);
+      setRecallStatus(`${cached.debug.status}(复用缓存)`);
+      return;
+    }
 
     // 召回前先补齐窗口外缺失的向量索引(载入老聊天/向量后开 → 旧叶子可能从未索引),
     // 否则这些旧剧情会直接漏召回。只阻塞窗口外,窗口内交给防抖增量。
@@ -286,18 +324,20 @@ export async function runVectorRecall(signal?: AbortSignal): Promise<void> {
     // 1) 按固定模式生成查询;重写失败不切换模式,交给外层 catch 结束本轮召回。
     const { queryVectors, rerankQuery } = await resolveQueryVectors(queryMode, userQuery, signal);
     if (!queryVectors.length) {
-      setRecallStatus('未召回:未生成查询向量');
-      clearRecallInjection();
+      finish('未召回:未生成查询向量');
       return;
     }
 
     // 2) 后端检索:多路在范围内纯按 embedding 得分取前 rerankCandidates(后端 max 融合,不套阈值),排除窗口内叶子
-    const exclude = windowLeafIds(chat);
-    const selfScope = currentChatScope();
-    const { results } = await vecSearch(database, scopes, queryVectors, {
+    // 无效手动来源也排除旧索引,否则番外/陈旧摘要可能经向量路径重新混入。
+    const forcedIds = new Set(itemsNow().filter(item => item.leafId).map(item => item.leafId!));
+    const exclude = [...new Set([...windowLeafIds(chat), ...forcedIds])];
+    const response = await vecSearch(database, scopes, queryVectors, {
       topK: Math.max(1, cfg.rerankCandidates),
       excludeLeafIds: exclude,
     });
+    // 后端已排除,这里仍兜底,避免旧后端/重复命中占用向量名额。
+    const results = response.results.filter(hit => !forcedIds.has(hit.leafId));
     setRecallEmbedding(
       results.map(h => ({
         leafId: h.leafId,
@@ -309,8 +349,7 @@ export async function runVectorRecall(signal?: AbortSignal): Promise<void> {
       })),
     );
     if (!results.length) {
-      setRecallStatus('未召回:检索无候选');
-      clearRecallInjection();
+      finish('未召回:检索无候选');
       return;
     }
 
@@ -319,19 +358,25 @@ export async function runVectorRecall(signal?: AbortSignal): Promise<void> {
 
     // 4) 分档 + 上限(now = 故事内最新时间,作相对时间参照点,对齐历史摘要注入)
     const now = latestStoryTime(chat);
-    const { text, tiers } = buildRecallText(ranked, cfg, selfScope, now);
+    const { text, tiers, chunks } = buildRecallText(ranked, cfg, selfScope, now);
     recordRerankDebug(ranked, tiers, selfScope);
-    fn(RECALL_INJECT_KEY, text, IN_CHAT, recallInjectionDepth(), false, ROLE_SYSTEM, null);
-    setRecallInjected(text);
-    setRecallStatus(text ? '召回完成' : '召回完成:无内容达标,本回合未注入');
+    const result = finish(text ? '召回完成' : '召回完成:无内容达标,本回合未注入', chunks);
     // 实算成功才落缓存(失败/降级路径不缓存,下次重试)。存调试快照供命中时还原面板。
-    if (cacheKey) saveRecallCache({ key: cacheKey, text, debug: snapshotRecallDebug() });
+    if (cacheKey && result?.stable) saveRecallCache({ key: cacheKey, text: result.text, debug: snapshotRecallDebug() });
   } catch (e) {
-    console.warn('[柏宝书向量] 召回失败(降级为不召回):', e);
-    setRecallStatus(`失败:${e instanceof Error ? e.message : String(e)}`);
-    clearRecallInjection();
+    console.warn('[柏宝书向量] 召回失败:', e);
+    const message = e instanceof Error ? e.message : String(e);
+    if (!prepared) {
+      clearRecallInjection();
+      setRecallInjected('');
+      setRecallStatus(`失败:${message}`);
+      if (current()) toast(`强制注入配置保存失败,选择已保留,请重试:${message}`, 'error');
+    } else {
+      finish(`失败:${message}`);
+    }
   } finally {
     recalling = false;
+    forcedRecallRunning.value = false;
   }
 }
 
@@ -423,7 +468,7 @@ function buildRecallText(
   cfg: typeof apiSettings.vector.recall,
   selfScope: string | null,
   now: string,
-): { text: string; tiers: Map<string, 'full' | 'brief'> } {
+): { text: string; tiers: Map<string, 'full' | 'brief'>; chunks: string[] } {
   const seen = new Set<string>();
   const tiers = new Map<string, 'full' | 'brief'>();
   const fullChunks: string[] = [];
@@ -457,9 +502,13 @@ function buildRecallText(
   }
 
   const chunks = [...fullChunks, ...briefChunks];
-  if (!chunks.length) return { text: '', tiers };
-  // 首尾私密简报框定,避免主模型把召回回忆当成要复述/输出的模板
-  return { text: `${MEMORY_BRIEFING_NOTE}\n[相关回忆]\n${chunks.join('\n\n')}\n${MEMORY_BRIEFING_END}`, tiers };
+  return { text: wrapRecallText([], chunks), tiers, chunks };
+}
+
+function wrapRecallText(forced: string[], vector: string[]): string {
+  const sections = [forced.length ? `[强制注入]\n${forced.join('\n\n')}` : '',
+    vector.length ? `[相关回忆]\n${vector.join('\n\n')}` : ''].filter(Boolean);
+  return sections.length ? `${MEMORY_BRIEFING_NOTE}\n${sections.join('\n\n')}\n${MEMORY_BRIEFING_END}` : '';
 }
 
 /**
@@ -481,7 +530,7 @@ function fmtStoryTimeHead(storyTime: string, now: string): string {
  * 单条召回片段:行首加来源标记(本聊天「#5」/ 旧档),让主模型知道这段回忆出处;
  * body 未自带内嵌时间时再补一个故事时间头【(相对) 起 - 止】(若有)。
  */
-function fmtChunk(h: RankedHit, body: string, bodyHasInlineTime: boolean, selfScope: string | null, now: string): string {
+function fmtChunk(h: Pick<VecHit, 'scope' | 'msgIndex' | 'storyTime'>, body: string, bodyHasInlineTime: boolean, selfScope: string | null, now: string): string {
   const src = `[${sourceLabel(h, selfScope)}]`;
   if (bodyHasInlineTime) {
     // 全文自身保留原始起止时间标签，但仍需在全文前补充相对时间，

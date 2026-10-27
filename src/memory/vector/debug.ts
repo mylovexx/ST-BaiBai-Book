@@ -48,12 +48,22 @@ export interface RecallDebug {
   queries: string[];
   embedding: RecallDebugEmbedHit[];
   rerank: RecallDebugRerankHit[];
+  /** 手动选择不经过向量评分,单独记录实际注入与跳过原因。 */
+  forced: RecallDebugForcedHit[];
   /** 最终注入主对话的文本(空 = 本回合未注入) */
   injectedText: string;
 }
 
+export interface RecallDebugForcedHit {
+  messageId: string;
+  source: string;
+  mode: 'summary' | 'full';
+  preview: string;
+  reason: string;
+}
+
 function empty(): RecallDebug {
-  return { at: 0, status: '', queryMode: 'rewrite', intent: '', queries: [], embedding: [], rerank: [], injectedText: '' };
+  return { at: 0, status: '', queryMode: 'rewrite', intent: '', queries: [], embedding: [], rerank: [], forced: [], injectedText: '' };
 }
 
 /** 全局召回调试快照。UI 直接订阅;recall.ts 在各阶段写入。 */
@@ -93,6 +103,10 @@ export function setRecallInjected(text: string): void {
   recallDebug.injectedText = text;
 }
 
+export function setRecallForced(hits: RecallDebugForcedHit[]): void {
+  recallDebug.forced = hits;
+}
+
 /** 快照当前调试结果(深拷贝),供召回缓存留存,命中时再 restore 回面板。 */
 export function snapshotRecallDebug(): RecallDebug {
   return JSON.parse(JSON.stringify(recallDebug));
@@ -100,5 +114,5 @@ export function snapshotRecallDebug(): RecallDebug {
 
 /** 把缓存的调试快照还原到面板(命中缓存时用,免得 reset 后面板空白)。 */
 export function restoreRecallDebug(snap: RecallDebug): void {
-  Object.assign(recallDebug, snap);
+  Object.assign(recallDebug, empty(), snap);
 }

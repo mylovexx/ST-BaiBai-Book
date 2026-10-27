@@ -2,6 +2,8 @@
 import Icon from '@/components/Icon.vue';
 import ConfirmDialog from '@/components/ConfirmDialog.vue';
 import ModalMask from '@/components/ModalMask.vue';
+import ForcedRecallButton from '@/components/ForcedRecallButton.vue';
+import QuickFavoriteButton from '@/components/QuickFavoriteButton.vue';
 import { addSummary, appendOpToLatestLeaf, deleteLeafAt, deleteSummary, deleteSummarySubtrees, editLeafAt, editPlan, editSummary, invalidateSummaryAncestors } from '@/memory/apply';
 import { apiSettings } from '@/api/settings';
 import { batchBackfill, batchState, cancelBatchBackfill, engineState, floorBackfillState, isAiFloor, resummarizeNow, summarizeFloor, summarizeSelected, syncHiddenNow } from '@/memory/engine';
@@ -1143,13 +1145,17 @@ provide(SUMMARY_CTX, {
             <!-- 摘要:相对时间 + 楼层号都做成等高小标签(盒子居中,免去 CJK 基线下沉),绝对时间作题首文本(窄屏换行) -->
             <template v-else>
               <span v-if="rowRelative(r)" class="bbs-summary-rel">{{ rowRelative(r) }}</span>
-              <span class="bbs-summary-loc">{{ floorLabel(r) }}</span>
+              <span class="bbs-summary-floor">
+                <span class="bbs-summary-loc">{{ floorLabel(r) }}</span>
+                <QuickFavoriteButton v-if="!selectMode" :floor="r.floorLo" />
+              </span>
               <span v-if="rowTime(r)" class="bbs-summary-dateline">{{ rowTime(r) }}</span>
             </template>
             <span v-if="r.stale" class="bbs-summary-stale">待更新</span>
             <!-- 操作键:编辑对任何命中行开放(结构安全;叶子改完向量自动重 embed,总结不进向量库);
                  删除仅根行(删深层会级联删祖先总结链);选择模式无操作 -->
             <span v-if="!selectMode" class="bbs-summary-acts">
+              <ForcedRecallButton v-if="r.kind === 'leaf'" :floor="r.floorLo" />
               <button
                 class="bbs-summary-act"
                 type="button"

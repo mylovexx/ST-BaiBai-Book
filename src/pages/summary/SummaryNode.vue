@@ -5,6 +5,8 @@
  * 高度过渡与 Collapsible.vue / 悬念簿同款——内容常驻 DOM,不脱流,故无闪烁。
  */
 import Icon from '@/components/Icon.vue';
+import ForcedRecallButton from '@/components/ForcedRecallButton.vue';
+import QuickFavoriteButton from '@/components/QuickFavoriteButton.vue';
 import { computed, inject } from 'vue';
 import type { ViewNode } from '@/memory/inject';
 import { SUMMARY_CTX, type SummaryCtx } from './ctx';
@@ -42,12 +44,16 @@ const isChild = computed(() => props.depth > 0);
           </template>
           <template v-else>
             <span v-if="ctx.rowRelative(row)" class="bbs-summary-rel">{{ ctx.rowRelative(row) }}</span>
-            <span class="bbs-summary-loc">{{ ctx.floorLabel(row) }}</span>
+            <span class="bbs-summary-floor">
+              <span class="bbs-summary-loc">{{ ctx.floorLabel(row) }}</span>
+              <QuickFavoriteButton :floor="row.floorLo" />
+            </span>
             <span v-if="ctx.rowTime(row)" class="bbs-summary-dateline">{{ ctx.rowTime(row) }}</span>
           </template>
           <!-- 操作键:编辑对任何层级开放(结构安全:不改 id、不断链;叶子改完向量索引自动重 embed,
                总结不进向量库、只影响上下文注入);删除仅根行——删深层叶子会级联删整条祖先总结链 -->
           <span class="bbs-summary-acts">
+            <ForcedRecallButton v-if="row.kind === 'leaf'" :floor="row.floorLo" />
             <button class="bbs-summary-act" type="button" :title="row.imported ? '编辑导入历史' : row.kind === 'comp' ? '编辑总结' : '编辑摘要'" @click="ctx.openEdit(row)">
               <Icon name="edit" />
             </button>

@@ -377,6 +377,14 @@
   flex-wrap: wrap;
 }
 
+/* 窄屏换行时收藏键仍紧邻来源楼层,避免误认成其他标签的操作。 */
+.bbs-summary-floor {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+}
+
 /* 绝对时间作题首文本,line-height:1 让它与同行等高标签的视觉中心对齐 */
 .bbs-summary-dateline,
 .bbs-summary-time {
@@ -450,7 +458,7 @@
   padding: 2px 8px;
 }
 
-/* 动作组靠右;平时隐身,hover/聚焦该卡才浮现 */
+/* 已选强制注入常显,避免移开指针后看不到状态;其余动作随 hover/聚焦浮现。 */
 .bbs-summary-acts {
   margin-left: auto;
   display: inline-flex;
@@ -460,7 +468,8 @@
 }
 
 .bbs-summary-card:hover .bbs-summary-acts,
-.bbs-summary-card:focus-within .bbs-summary-acts {
+.bbs-summary-card:focus-within .bbs-summary-acts,
+.bbs-summary-acts:has(.bbs-force-button.is-forced) {
   opacity: 1;
 }
 

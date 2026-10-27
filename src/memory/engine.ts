@@ -1872,6 +1872,8 @@ export function bindEngine(): void {
 
   // 发新消息:此刻末尾 AI 是「上一条已定稿」的回复,从最早缺口开始顺序追赶到它。
   es.on(et.USER_MESSAGE_RENDERED, () => {
+    clearRecallInjection(); // 新轮次不能沿用上一轮手动选择的提示槽。
+    recomputeDerived();
     console.log('[柏宝书] USER_MESSAGE_RENDERED → 摘上一条 AI');
     void maybeSummarizePrevAi(false);
   });
@@ -1926,7 +1928,10 @@ export function bindEngine(): void {
   // 开启→把当前记忆重新注入回上下文。仅响应切换,不在首帧触发。
   watch(
     () => apiSettings.enabled,
-    on => (on ? refreshInjection() : clearInjection()),
+    on => {
+      if (on) refreshInjection();
+      else { clearInjection(); clearRecallInjection(); }
+    },
   );
 
   // 自动摘要开关切换:时间标签(隐藏正则 + 固定提示词)随它启停,不再独立开关。

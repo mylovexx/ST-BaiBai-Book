@@ -37,8 +37,7 @@ const HOST_ID = 'bbs-app-host';
   try {
     // 先走积压拦截:返回 true = 已 abort 本次生成,无需召回(生成不会发生)。
     const intercepted = await handleGenerationIntercept(type, abort);
-    // 放行且该类型需要召回 → 阻塞式向量召回(写注入槽后再放行生成)。
-    // 召回内部自带向量开关/可用性判断,失败静默降级,绝不影响生成。
+    // 放行后合并手动选择与向量召回;向量降级不丢弃手动注入。
     if (!intercepted && shouldRecallForType(type)) {
       await runVectorRecall();
     }

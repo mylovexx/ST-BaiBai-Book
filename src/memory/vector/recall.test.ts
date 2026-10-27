@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as settings from '@/api/settings';
 import type { VecHit } from '@/api/baibaoku';
 import * as context from '@/st/context';
+import * as notices from '@/st/toast';
 import type { STContext, STMessage } from '@/st/context';
 import * as engine from '../engine';
 import * as embed from './embed';
@@ -12,6 +13,8 @@ import * as store from './store';
 import { RECALL_CACHE_STORAGE_KEY } from './cache';
 import { recallDebug, resetRecallDebug, snapshotRecallDebug } from './debug';
 import { runVectorRecall } from './recall';
+import { prepareForcedRecallRound, readForcedRecallState, removeForcedRecall, selectForcedRecall } from '../forcedRecall';
+import { MEMORY_BRIEFING_NOTE, MEMORY_BRIEFING_END } from '../prompts';
 
 const originalVector = JSON.parse(JSON.stringify(settings.apiSettings.vector));
 const message = (isUser: boolean, mes: string, overrides: Partial<STMessage> = {}): STMessage => ({
@@ -25,6 +28,7 @@ const hits: VecHit[] = [
 ];
 let chat: STMessage[];
 let inject: ReturnType<typeof vi.fn>;
+let ctx: STContext;
 
 beforeEach(() => {
   settings.apiSettings.vector = JSON.parse(JSON.stringify(originalVector));
@@ -39,7 +43,9 @@ beforeEach(() => {
   });
   chat = [message(false, '上一轮剧情。'), message(true, '她还记得当年的约定吗？'), message(false, '待重生成的回复。')];
   inject = vi.fn();
-  vi.spyOn(context, 'getContext').mockReturnValue({ chat, setExtensionPrompt: inject } as unknown as STContext);
+  ctx = { chat, chatMetadata: {}, getCurrentChatId: () => 'recall-test', setExtensionPrompt: inject,
+    saveChat: vi.fn().mockResolvedValue(undefined), saveMetadata: vi.fn().mockResolvedValue(undefined) } as unknown as STContext;
+  vi.spyOn(context, 'getContext').mockReturnValue(ctx);
   vi.spyOn(settings, 'engineActiveHere').mockReturnValue(true);
   vi.spyOn(scope, 'currentVectorDb').mockReturnValue('recall-db');
   vi.spyOn(scope, 'currentChatId').mockReturnValue('recall-test');
@@ -53,6 +59,180 @@ beforeEach(() => {
   vi.spyOn(store, 'vecSearch').mockResolvedValue({ results: hits });
   vi.spyOn(rewrite, 'rewriteQuery').mockResolvedValue({ intent: '回忆当年的约定。', queries: ['曾经的约定', '她与主角的往事'] });
   resetRecallDebug();
+});
+
+describe('手动强制注入与向量合并', () => {
+  async function choose(mode: 'summary' | 'full' = 'summary') {
+    chat[0].extra = { bbs_leaf: { id: 'full', text: '手动选中的旧楼摘要', delta: {}, createdAt: 1, swipe: 0, v: 1 } };
+    await selectForcedRecall(0, mode);
+  }
+
+  it.each(['disabled', 'unconfigured', 'window', 'floor count', 'empty input', 'no hits', 'rewrite failure', 'embedding failure', 'search failure'])(
+    '向量%s时仍注入手动内容并记录详情', async scenario => {
+      await choose();
+      if (scenario === 'disabled') settings.apiSettings.vector.enabled = false;
+      if (scenario === 'unconfigured') vi.mocked(scope.currentVectorDb).mockReturnValue(null);
+      if (scenario === 'window') vi.mocked(engine.resolveKeepStart).mockReturnValue(0);
+      if (scenario === 'floor count') settings.apiSettings.vector.recall.minAiFloors = 30;
+      if (scenario === 'empty input') chat[1].mes = '  ';
+      if (scenario === 'no hits') vi.mocked(store.vecSearch).mockResolvedValue({ results: [] });
+      if (scenario === 'rewrite failure') {
+        settings.apiSettings.vector.traditionalMode = false;
+        vi.mocked(rewrite.rewriteQuery).mockRejectedValue(new Error('重写失败'));
+      }
+      if (scenario === 'embedding failure') vi.mocked(embed.embedTexts).mockRejectedValue(new Error('向量化失败'));
+      if (scenario === 'search failure') vi.mocked(store.vecSearch).mockRejectedValue(new Error('检索失败'));
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      await runVectorRecall();
+      expect(inject.mock.calls.at(-1)?.[0]).toBe('baibai_book_vector_recall');
+      expect(inject.mock.calls.at(-1)?.[1]).toContain('手动选中的旧楼摘要');
+      expect(recallDebug.forced).toMatchObject([{ source: '#0', mode: 'summary', reason: '' }]);
+      expect(recallDebug.injectedText).toContain('[强制注入]');
+    });
+
+  it('强制内容不挤占向量全文或最终名额,重复来源排除且包装只有一次', async () => {
+    await choose('full');
+    Object.assign(settings.apiSettings.vector.recall, { finalRecallCount: 1, fullTextCount: 1 });
+    vi.mocked(store.vecSearch).mockResolvedValue({ results: [hits[0], { ...hits[1], similarity: 0.98 }] });
+    vi.mocked(embed.rerankDocuments).mockResolvedValue([{ index: 0, score: 0.99 }]);
+    await runVectorRecall();
+    expect(store.vecSearch).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(),
+      expect.objectContaining({ excludeLeafIds: ['full'] }));
+    const text = recallDebug.injectedText;
+    expect(text).toContain(chat[0].mes);
+    expect(text).toContain(hits[1].mesFull);
+    expect(text).not.toContain(hits[0].mesFull);
+    expect(text.split(MEMORY_BRIEFING_NOTE)).toHaveLength(2);
+    expect(text.split(MEMORY_BRIEFING_END)).toHaveLength(2);
+    expect(text.indexOf('[强制注入]')).toBeLessThan(text.indexOf('[相关回忆]'));
+    expect(recallDebug.rerank).toMatchObject([{ leafId: 'brief', tier: 'full' }]);
+  });
+
+  it('同轮重roll复用缓存,修改手动模式和来源正文后重新计算', async () => {
+    await choose();
+    await runVectorRecall();
+    const text = recallDebug.injectedText;
+    chat[2].mes = '新的swipe回复';
+    await runVectorRecall();
+    expect(embed.embedTexts).toHaveBeenCalledOnce();
+    expect(recallDebug.injectedText).toBe(text);
+    await selectForcedRecall(0, 'full');
+    await runVectorRecall();
+    expect(embed.embedTexts).toHaveBeenCalledTimes(2);
+    chat[0].mes = '更新的来源正文';
+    await runVectorRecall();
+    expect(embed.embedTexts).toHaveBeenCalledTimes(3);
+    expect(recallDebug.injectedText).toContain('更新的来源正文');
+  });
+
+  it('新轮、显式清空和总开关关闭都不残留上一轮手动内容', async () => {
+    await choose();
+    settings.apiSettings.vector.enabled = false;
+    await runVectorRecall();
+    await removeForcedRecall();
+    await runVectorRecall();
+    expect(recallDebug.injectedText).toBe('');
+    await selectForcedRecall(0, 'summary');
+    await runVectorRecall();
+    chat.push(message(true, '新一轮输入'));
+    await runVectorRecall();
+    expect(recallDebug.forced).toEqual([]);
+    expect(inject.mock.calls.at(-1)?.[1]).toBe('');
+    await selectForcedRecall(0, 'full');
+    vi.mocked(settings.engineActiveHere).mockReturnValue(false);
+    await runVectorRecall();
+    expect(inject.mock.calls.at(-1)?.[1]).toBe('');
+    expect(readForcedRecallState().pending).toHaveLength(1);
+  });
+
+  it.each(['omit', 'swipe', 'deleted'])('来源%s后跳过并显示原因', async scenario => {
+    await choose();
+    await prepareForcedRecallRound();
+    if (scenario === 'omit') chat[0].extra!.bbs_omit = true;
+    if (scenario === 'swipe') chat[0].swipe_id = 1;
+    if (scenario === 'deleted') chat.shift();
+    settings.apiSettings.vector.enabled = false;
+    await runVectorRecall();
+    expect(recallDebug.forced[0].reason).toBeTruthy();
+    expect(recallDebug.injectedText).toBe('');
+  });
+
+  it('不把待重生成的当前回复当作来源', async () => {
+    await selectForcedRecall(2, 'full');
+    settings.apiSettings.vector.enabled = false;
+    await runVectorRecall();
+    expect(recallDebug.forced[0].reason).toContain('正在重生成');
+    expect(recallDebug.injectedText).toBe('');
+  });
+
+  it('无效手动来源不会经旧向量索引回退成另一种模式注入', async () => {
+    await choose();
+    await prepareForcedRecallRound();
+    chat[0].extra!.bbs_omit = true;
+    vi.mocked(embed.rerankDocuments).mockResolvedValue([{ index: 0, score: 0.5 }]);
+    await runVectorRecall();
+    expect(recallDebug.forced[0].reason).toContain('番外');
+    expect(recallDebug.injectedText).not.toContain(hits[0].mesFull);
+    expect(recallDebug.injectedText).not.toContain('手动选中的旧楼摘要');
+    expect(recallDebug.injectedText).toContain(hits[1].document);
+  });
+
+  it('取消召回清空共享槽,保留该轮组合供下一次重试', async () => {
+    await choose();
+    const controller = new AbortController();
+    vi.mocked(index.ensureRecallIndex).mockImplementationOnce(async () => { controller.abort(); });
+    await runVectorRecall(controller.signal);
+    expect(inject.mock.calls.at(-1)?.[1]).toBe('');
+    expect(recallDebug.injectedText).toBe('');
+    expect(readForcedRecallState().history).toHaveLength(1);
+    expect(localStorage.getItem(RECALL_CACHE_STORAGE_KEY)).toBeNull();
+    await runVectorRecall();
+    expect(recallDebug.injectedText).toContain('手动选中的旧楼摘要');
+  });
+
+  it('绑定保存失败显示实际错误,保留草稿供重试', async () => {
+    await choose();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const notice = vi.spyOn(notices, 'toast').mockImplementation(() => {});
+    vi.mocked(ctx.saveMetadata).mockRejectedValueOnce(new Error('服务器保存失败'));
+    await runVectorRecall();
+    expect(recallDebug.status).toContain('服务器保存失败');
+    expect(recallDebug.injectedText).toBe('');
+    expect(readForcedRecallState().pending).toHaveLength(1);
+    expect(notice).toHaveBeenCalledWith(expect.stringContaining('选择已保留'), 'error');
+    await runVectorRecall();
+    expect(recallDebug.injectedText).toContain('手动选中的旧楼摘要');
+  });
+
+  it('召回等待期间切聊天,不写入旧聊天内容或缓存', async () => {
+    await choose();
+    let finish!: () => void;
+    vi.mocked(store.vecSearch).mockImplementationOnce(() => new Promise(resolve => { finish = () => resolve({ results: hits }); }));
+    const running = runVectorRecall();
+    await vi.waitFor(() => expect(store.vecSearch).toHaveBeenCalledOnce());
+    const nextInject = vi.fn();
+    vi.mocked(context.getContext).mockReturnValue({ ...ctx, chat: [], chatMetadata: {}, setExtensionPrompt: nextInject });
+    vi.mocked(scope.currentChatId).mockReturnValue('another-chat');
+    finish();
+    await running;
+    expect(nextInject.mock.calls.at(-1)?.[1]).toBe('');
+    expect(inject.mock.calls.some(call => call[1].includes('手动选中'))).toBe(false);
+    expect(localStorage.getItem(RECALL_CACHE_STORAGE_KEY)).toBeNull();
+  });
+
+  it('召回等待期间来源变成番外,不发旧内容且不保存过期缓存', async () => {
+    await choose();
+    let finish!: () => void;
+    vi.mocked(store.vecSearch).mockImplementationOnce(() => new Promise(resolve => { finish = () => resolve({ results: hits }); }));
+    const running = runVectorRecall();
+    await vi.waitFor(() => expect(store.vecSearch).toHaveBeenCalledOnce());
+    chat[0].extra!.bbs_omit = true;
+    finish();
+    await running;
+    expect(recallDebug.injectedText).toBe('');
+    expect(recallDebug.forced[0].reason).toContain('番外');
+    expect(localStorage.getItem(RECALL_CACHE_STORAGE_KEY)).toBeNull();
+  });
 });
 
 afterEach(() => {
@@ -157,6 +337,7 @@ describe('traditional vector recall', () => {
     vi.mocked(index.ensureRecallIndex).mockImplementationOnce(() => new Promise<void>(resolve => { finishIndex = resolve; }));
     const originalInput = chat[1].mes;
     const pending = runVectorRecall();
+    await vi.waitFor(() => expect(index.ensureRecallIndex).toHaveBeenCalledOnce());
     settings.apiSettings.vector.traditionalMode = false;
     chat[1].mes = '索引等待期间编辑的输入。';
     finishIndex();
