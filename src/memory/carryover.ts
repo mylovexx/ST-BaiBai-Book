@@ -16,8 +16,9 @@
 import { getContext, getDoNewChat, setMessageText, type STMessage } from '@/st/context';
 import { toast } from '@/st/toast';
 import { apiSettings } from '@/api/settings';
-import { deriveMemory, makeLeafId } from './apply';
+import { deriveMemory, makeLeafId, planId } from './apply';
 import { resolveKeepStart } from './engine';
+import { knowledgeId } from './knowledge';
 import { refreshInjection, renderHistoryNodes, selectHistoryNodesBefore } from './inject';
 import { latestStoryTime } from './timeTag';
 import { memory, recomputeDerived, saveMemory, flushLeavesNow } from './store';
@@ -70,6 +71,7 @@ function deltaHasData(delta: StoredDelta): boolean {
     delta.lifeDetails?.update?.length ||
     delta.lifeDetails?.archive?.length ||
     delta.lifeDetails?.remove?.length ||
+    delta.knowledge?.length ||
     (delta.protagonist && Object.keys(delta.protagonist).length) ||
     delta.items?.add?.length ||
     delta.items?.update?.length ||
@@ -121,6 +123,10 @@ function encodeStateAsDelta(state: ReturnType<typeof deriveMemory>, leafId: stri
         .map((d, i) => ({ id: `detail:${leafId}#${i}`, tier: d.tier }))
         .filter(u => u.tier !== 'active'),
     };
+  }
+  // 了解清单:全量带走,第 i 条落地为 know:种子叶#i(与下方 knowledgeIds 同序)
+  if (state.knowledge.length) {
+    delta.knowledge = state.knowledge.map(k => ({ op: 'add' as const, subject: k.subject, text: k.text }));
   }
 
   if (state.items.length) {
@@ -186,8 +192,13 @@ function encodeStateAsDelta(state: ReturnType<typeof deriveMemory>, leafId: stri
   return delta;
 }
 
-/** 深拷贝一条要搬运的消息,取消隐藏、保留叶子。 */
-function sanitizeCarryMessage(m: STMessage, detailIds: ReadonlyMap<string, string>): STMessage {
+/** 深拷贝一条要搬运的消息,取消隐藏、保留叶子。(导出供测试) */
+export function sanitizeCarryMessage(
+  m: STMessage,
+  detailIds: ReadonlyMap<string, string>,
+  planIds: ReadonlyMap<string, string>,
+  knowledgeIds: ReadonlyMap<string, string> = new Map(),
+): STMessage {
   const clone: STMessage = JSON.parse(JSON.stringify(m));
   clone.is_system = false;
   if (clone.extra && 'bbs_hidden' in clone.extra) {
@@ -201,6 +212,20 @@ function sanitizeCarryMessage(m: STMessage, detailIds: ReadonlyMap<string, strin
     for (const key of ['archive', 'remove'] as const) {
       if (life[key]) life[key] = life[key].map(id => detailIds.get(id) ?? id);
     }
+  }
+  // 未了结计划同样改挂种子叶,同理同步窗口内的了结/更新/重启/删除引用。
+  const plans = clone.extra?.bbs_leaf?.delta.plans;
+  if (plans) {
+    const remap = (id: string) => planIds.get(id) ?? id;
+    if (plans.resolve) plans.resolve = plans.resolve.map(r => typeof r === 'string' ? remap(r) : { ...r, id: remap(r.id) });
+    for (const update of plans.update ?? []) update.id = remap(update.id);
+    for (const key of ['reopen', 'remove'] as const) {
+      if (plans[key]) plans[key] = plans[key].map(remap);
+    }
+  }
+  // 了解条目也改挂种子叶:窗口内的改写/删除引用跟着换 id
+  for (const op of clone.extra?.bbs_leaf?.delta.knowledge ?? []) {
+    if (op.op !== 'add') op.id = knowledgeIds.get(op.id) ?? op.id;
   }
   return clone;
 }
@@ -270,6 +295,9 @@ export async function createNewChatWithCarryover(): Promise<boolean> {
   const seedLeafId = makeLeafId();
   const seedDelta = encodeStateAsDelta(stateBefore, seedLeafId);
   const detailIds = new Map(stateBefore.lifeDetails.map((d, i) => [d.id, `detail:${seedLeafId}#${i}`]));
+  // 与 encodeStateAsDelta 的 plans.add 同序:第 i 个未了结计划 → 种子叶的第 i 条
+  const planIds = new Map(stateBefore.plans.filter(p => p.status === 'open').map((p, i) => [p.id, planId(seedLeafId, i)]));
+  const knowledgeIds = new Map(stateBefore.knowledge.map((k, i) => [k.id, knowledgeId(seedLeafId, i)]));
 
   // 合并历史摘要(窗口之前的剧情) = 种子叶子 text
   const mergedSummary = renderHistoryNodes(selectHistoryNodesBefore(memory.summaries, sourceChat, carryStart));
@@ -283,7 +311,7 @@ export async function createNewChatWithCarryover(): Promise<boolean> {
     const m = sourceChat[i];
     if (!m) continue;
     if (m.is_system && m.extra?.type) continue; // 原生系统楼不搬
-    carryMessages.push(sanitizeCarryMessage(m, detailIds));
+    carryMessages.push(sanitizeCarryMessage(m, detailIds, planIds, knowledgeIds));
   }
 
   if (!mergedSummary && !carryMessages.length && !deltaHasData(seedDelta)) {

@@ -5,11 +5,11 @@ import type { TaskType } from '@/api/settings';
 import type { STMessage, WorldInfoEntry } from '@/st/context';
 import { getContext, getCheckWorldInfo, getEjsTemplate, setMessageText } from '@/st/context';
 import { toast } from '@/st/toast';
-import { addSummary, classifyNpcPresence, deriveMemory, finalizeDelta, fmtVarOpsInline, getLeaf, invalidateSummaryAncestors, itemChangesOf, leafValid, makeLeafId, pruneBrokenComps, syncItemLogFromMessage, type LocationEvidenceGuard } from './apply';
+import { addSummary, classifyNpcPresence, deriveMemory, finalizeDelta, fmtVarOpsInline, getLeaf, invalidateSummaryAncestors, itemChangesOf, leafValid, makeLeafId, pruneBrokenComps, syncItemLogFromMessage } from './apply';
+import { selectKnowledgeForSummary } from './knowledge';
 import { extractJsonObject } from './json';
-import { fmtConditionFragments } from './conditionPatch';
 import { clearInjection, refreshInjection, renderHistoryNodes, selectHistoryNodesBefore } from './inject';
-import { buildBatchSummaryPrompt, buildBatchThinking, buildCharCardSystem, buildPersonaSystem, buildResummaryPrompt, buildSummaryPrompt, buildSummaryThinking, buildWorldInfoSystem, fmtItemLogInline, isBuiltinSummaryPrompt, JAILBREAK_PROMPT, RESUMMARY_THINKING_CHECKLIST, selectRecentResolvedPlans } from './prompts';
+import { buildBatchSummaryPrompt, buildBatchThinking, buildCharCardSystem, buildPersonaSystem, buildResummaryPrompt, buildSummaryPrompt, buildSummaryThinking, buildWorldInfoSystem, fmtItemLogInline, JAILBREAK_PROMPT, RESUMMARY_THINKING_CHECKLIST, selectRecentResolvedPlans } from './prompts';
 import { clampToTimeTags, cleanBody, parseTimeRange, syncTimeTagRegex, writeItemLogTag, writeVarLogTag } from './timeTag';
 import { renderSourceHints, type SourceExcerpt } from './sourceHints';
 import { memory, recomputeDerived, scheduleLeafFlush } from './store';
@@ -1072,7 +1072,7 @@ function applyLeafForFloor(
   delta: SummaryDelta,
   stateBefore: ReturnType<typeof deriveMemory>,
   replaceLeaf?: LeafExtra,
-  evidenceGuard?: LocationEvidenceGuard,
+  knowledgeShown?: { id: string }[],
 ): void {
   if (!chat[aiFloor]) {
     throw new Error(`摘要落叶失败:楼层 #${aiFloor} 已不存在(可能在请求期间被删除)`);
@@ -1086,7 +1086,9 @@ function applyLeafForFloor(
   // 未了结计划的有序列表:顺序即提示词里的 p1/p2…,用于把 resolve 短序号翻译成稳定 id
   const openPlansOrdered = stateBefore.plans.filter(p => p.status === 'open');
   // 生活小档案当前列表:顺序即提示词里的 d1/d2…,用于把 update/archive/remove 短序号翻译成稳定 id
-  const storedDelta = finalizeDelta(delta, openPlansOrdered, stateBefore.lifeDetails, evidenceGuard);
+  // 了解清单同理(k1/k2…);未传 knowledgeShown = 功能关闭,AI 输出的 knowledge 整段丢弃
+  const storedDelta = finalizeDelta(delta, openPlansOrdered, stateBefore.lifeDetails,
+    knowledgeShown && { shown: knowledgeShown, npcNames: stateBefore.npcs.map(n => n.name) });
 
   // 时间起止:标签优先(与新剧情同源不漂移);标签缺的那端用 AI 补的 timeStart/timeEnd 兜底。
   const timeStart = tag.start || llmOptionalScalar(delta.timeStart) || undefined;
@@ -1157,6 +1159,17 @@ async function summarizeFloorWork(
   const persona = fetchUserPersona();
 
   const openPlansOrdered = stateBefore.plans.filter(p => p.status === 'open');
+  // 了解清单只给相关角色(主要/在场/本轮正文点名),省 token;顺序即提示词里的 k1/k2…
+  // 点名只认两个字以上的名字:「林」「夏」这种单字名几乎每段正文都能命中
+  const knowledgeShown = apiSettings.injection.knowledge
+    ? selectKnowledgeForSummary(
+        stateBefore.knowledge,
+        stateBefore.npcs
+          .filter(n => n.important || (n.name.length >= 2 && content.includes(n.name))
+            || classifyNpcPresence(n, stateBefore.scenes, stateBefore.state.location, stateBefore.state.locationPath) === 'present')
+          .map(n => n.name),
+      )
+    : undefined;
   const prompt = buildSummaryPrompt({
     user: ctx.name1,
     char: ctx.name2,
@@ -1164,11 +1177,12 @@ async function summarizeFloorWork(
     location: stateBefore.state.location,
     sceneFocus: stateBefore.state.sceneFocus,
     lifeDetails: stateBefore.lifeDetails,
+    knowledge: knowledgeShown,
     protagonist: stateBefore.protagonist,
     items: stateBefore.items.map(i => ({ name: i.name, qty: i.qty, desc: i.desc, carried: i.carried, location: i.location })),
     itemLog: stateBefore.itemLog,
     scenes: stateBefore.scenes.map(s => ({ path: s.path, desc: s.desc })),
-    npcs: stateBefore.npcs.map(n => ({ name: n.name, gender: n.gender, age: n.age, ageTime: n.ageTime, relation: n.relation, affinityInner: n.affinityInner, affinityOuter: n.affinityOuter, affinityNote: n.affinityNote, ties: n.ties, title: n.title, personality: n.personality, important: n.important, outfit: n.outfit, condition: n.condition ? fmtConditionFragments(n.condition) : undefined, follow: n.follow, location: n.location,
+    npcs: stateBefore.npcs.map(n => ({ name: n.name, gender: n.gender, age: n.age, ageTime: n.ageTime, relation: n.relation, affinityInner: n.affinityInner, affinityOuter: n.affinityOuter, affinityNote: n.affinityNote, ties: n.ties, title: n.title, personality: n.personality, important: n.important, outfit: n.outfit, condition: n.condition || undefined, follow: n.follow, location: n.location,
       // 在场标记按「本楼之前」的状态算,要 AI 逐个对照做离场/归场对账(与注入端同一权威判定)
       presence: classifyNpcPresence(n, stateBefore.scenes, stateBefore.state.location, stateBefore.state.locationPath) })),
     openPlans: openPlansOrdered.map(p => ({ kind: p.kind, content: p.content, createdTime: p.createdTime, targetTime: p.targetTime })),
@@ -1183,15 +1197,16 @@ async function summarizeFloorWork(
     varsRule: (['global', 'char', 'chat'] as const).map(t => memory.varTemplates[t].rule.trim()).filter(Boolean).join('\n\n'),
   });
 
-  const checklist = buildSummaryThinking(ctx.name1);
+  const checklist = buildSummaryThinking(ctx.name1, !!knowledgeShown);
   const messages: ChatMsg[] = [];
   const jb = apiSettings.prompts.jailbreak.trim() || JAILBREAK_PROMPT;
   if (jb) messages.push({ role: 'system', content: jb });
   if (charCard) messages.push({ role: 'system', content: buildCharCardSystem(charCard) });
   if (persona) messages.push({ role: 'system', content: buildPersonaSystem(persona) });
   if (worldInfo) messages.push({ role: 'system', content: buildWorldInfoSystem(worldInfo) });
+  // 自定义模板已自带全部补充段时 system 为空;空内容消息部分接口会拒收
+  if (prompt.system) messages.push({ role: 'system', content: prompt.system });
   messages.push(
-    { role: 'system', content: prompt.system },
     { role: 'user', content: prompt.user },
     { role: 'system', content: checklist },
   );
@@ -1206,7 +1221,7 @@ async function summarizeFloorWork(
     return { ...d, summary } as SummaryDelta & { summary: string };
   });
 
-  applyLeafForFloor(chat, aiFloor, delta, stateBefore, options.replaceLeaf, { content, enforce: isBuiltinSummaryPrompt() });
+  applyLeafForFloor(chat, aiFloor, delta, stateBefore, options.replaceLeaf, knowledgeShown);
   engineState.lastRunAt = Date.now();
 
   // 立刻反映到派生与注入;落盘走防抖(隐藏由收尾的 syncWindowHiddenState 统一负责)
@@ -1605,8 +1620,9 @@ export async function checkResummary(): Promise<number> {
       const jb = apiSettings.prompts.jailbreak.trim() || JAILBREAK_PROMPT;
       const messages: ChatMsg[] = [];
       if (jb) messages.push({ role: 'system', content: jb });
+      // 自定义模板已自带全部补充段时 system 为空;空内容消息部分接口会拒收
+      if (prompt.system) messages.push({ role: 'system', content: prompt.system });
       messages.push(
-        { role: 'system', content: prompt.system },
         { role: 'user', content: prompt.user + hints },
         { role: 'system', content: RESUMMARY_THINKING_CHECKLIST },
       );
@@ -1766,8 +1782,9 @@ export async function summarizeSelected(nodeIds: string[]): Promise<{ made: numb
     const jb = apiSettings.prompts.jailbreak.trim() || JAILBREAK_PROMPT;
     const messages: ChatMsg[] = [];
     if (jb) messages.push({ role: 'system', content: jb });
+    // 同自动压缩:system 可能为空,空消息不发
+    if (prompt.system) messages.push({ role: 'system', content: prompt.system });
     messages.push(
-      { role: 'system', content: prompt.system },
       { role: 'user', content: prompt.user + hints },
       { role: 'system', content: RESUMMARY_THINKING_CHECKLIST },
     );

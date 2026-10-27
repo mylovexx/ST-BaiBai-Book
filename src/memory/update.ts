@@ -18,8 +18,8 @@ import { PLUGIN_VERSION } from '@/version';
  */
 const CURRENT_VERSION = PLUGIN_VERSION;
 
-/** 与自用版安装仓库保持一致,避免用上游版本误报更新。 */
-const REMOTE_MANIFEST_URL = 'https://raw.githubusercontent.com/mylovexx/ST-BaiBai-Book/main/manifest.json';
+/** 与自用版安装分支保持一致,避免用 main 分支版本误报更新。 */
+const REMOTE_MANIFEST_URL = 'https://raw.githubusercontent.com/mylovexx/ST-BaiBai-Book/perf/optimize-query/manifest.json';
 
 /** 对外响应式状态:驱动设置 tab 角标与设置页版本区块。 */
 export const updateState = reactive<{

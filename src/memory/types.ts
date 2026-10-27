@@ -194,7 +194,7 @@ export interface MemNpc extends NpcAffinity {
   age?: string;
   /** 年龄锚点:记录 age 时的故事内时间。AI 不填——重放时系统自动盖上该叶子的 timeEnd */
   ageTime?: string;
-  /** 与主角的关系(覆盖型;引导格式「称谓,一句态度」,称谓在开头供不在场档截取) */
+  /** 与主角的关系(覆盖型;引导格式「称谓[,持续立场]」,立场可无,称谓在开头供不在场档截取) */
   relation?: string;
   /** 与其他角色的重要关系(档案层,高门槛;如「阿黛尔之父;与镇长有旧怨」) */
   ties?: string;
@@ -448,6 +448,30 @@ export interface LifeDetailUpdate {
 }
 
 /**
+ * 了解清单一条:某角色目前知道/以为的一件主角的事(防人设全知:没记的私事默认不知道)。
+ * 记的是角色的认知而非真相,把握程度写进句子(认定…/怀疑…/听说…/主角自称…),被骗就照记被骗后的认知。
+ */
+export interface MemKnowledge {
+  /** 稳定 id:know:${leafId}#${操作序号}(重放幂等、手动 op 可稳定引用) */
+  id: string;
+  /** 知情的角色名(NPC 名册中的名字;只记角色→主角) */
+  subject: string;
+  text: string;
+  /** 记录时的故事内时间 */
+  createdTime?: string;
+  createdAt: number;
+}
+
+/**
+ * 了解清单的存储操作:有序日志,按数组顺序重放。
+ * 不学生活小档案的 add→update→remove 分桶——手动「删了再加回」按分桶顺序会被吞掉。
+ */
+export type KnowledgeOp =
+  | { op: 'add'; subject: string; text: string }
+  | { op: 'update'; id: string; subject?: string; text?: string }
+  | { op: 'remove'; id: string };
+
+/**
  * 顶层记忆对象。
  * **只有 version + summaries 是真源并持久化**;state / items / plans 是从 summaries
  * 重放算出的派生缓存(供页面响应式读取,saveMemory 不写它们)。
@@ -470,6 +494,8 @@ export interface BaibaiMemory {
   itemLog: ItemLogEntry[];
   /** 派生缓存:主角及角色生活小档案(从叶子 delta 重放) */
   lifeDetails: MemLifeDetail[];
+  /** 派生缓存:各角色对主角的了解清单(从叶子 delta 重放) */
+  knowledge: MemKnowledge[];
   /** 真源镜像:三层变量定义模板(global/char 来自 settings,chat 来自 chatMetadata) */
   varTemplates: Record<VarTier, VarTemplate>;
   /** 派生缓存:变量当前状态(从合并模板起、fold 各叶子 varOps 得到的 JSON 树) */
@@ -486,6 +512,7 @@ export function createEmptyMemory(): BaibaiMemory {
     items: [],
     plans: [],
     lifeDetails: [],
+    knowledge: [],
     scenes: [],
     npcs: [],
     itemLog: [],
@@ -529,12 +556,10 @@ export interface NpcDelta extends NpcAffinity {
   personality?: string;
   /** 当前着装(即时层,覆盖型) */
   outfit?: string;
-  /** 当前状态/健康(即时层,覆盖型)。首次记录用此字段;已有非空伤情改用 conditionPatch */
+  /** 当前状态/健康(即时层,覆盖型) */
   condition?: string;
-  /** 伤情局部更新(已有非空 condition 时使用;编号 c1/c2 仅本请求有效) */
+  /** 旧存档的伤情局部补丁(v0.17 编号协议,已停用):仅重放,新输出不再产生 */
   conditionPatch?: ConditionPatch;
-  /** 非空 location 时的本轮正文连续定位短引(仅校验,不存档) */
-  locationEvidence?: string;
   /** 是否「主要角色」(剧情核心主演,永远全量注入) */
   important?: boolean;
   /** 是否随行(随主角移动)。省略=定点;明确随主角同行的同伴填 true */
@@ -559,14 +584,14 @@ export interface ProtagonistDelta {
   identity?: string;
   appearance?: string;
   outfit?: string;
-  /** 首次记录用此字段;已有非空伤情改用 conditionPatch */
+  /** 当前状态/健康(覆盖型) */
   condition?: string;
-  /** 伤情局部更新(已有非空 condition 时使用;编号 c1/c2 仅本请求有效) */
+  /** 旧存档的伤情局部补丁(v0.17 编号协议,已停用):仅重放,新输出不再产生 */
   conditionPatch?: ConditionPatch;
 }
 
 /**
- * 伤情局部更新协议的片段操作。
+ * 旧版伤情局部补丁的片段操作(仅重放旧存档)。
  * - replace 用 id(c1/c2…)定位旧片段,text 为空串表示清除该片段;
  * - add 追加新片段,不带 id;
  * 未列入 replace 的旧片段由程序原样保留。编号只在单次请求内有效。
@@ -587,7 +612,7 @@ export interface ConditionPatch {
 export interface SceneDelta {
   /** 完整地理路径,由粗到细(如 ["王都","城西区","归雁客栈"]) */
   path: string[];
-  /** 地点描述(必填:写不出有意义描述的地点不记;重放时丢弃空描述节点) */
+  /** 地点描述(add 可省:建点宽、描述严;update 给空串=清除描述,节点保留) */
   desc?: string;
 }
 
@@ -596,7 +621,7 @@ export interface SceneDelta {
  * 覆盖三种情形(都是同一操作):给顶级加父、在已有父子间插入中间节点、改换父级。
  *  - node:该节点**当前**的完整路径(由粗到细)。
  *  - newPath:它应在的**新**完整路径(末段通常与 node 末段同名)。
- *  - descs:newPath 上新建/需补描述的层级,键=该级地名,值=描述(desc 必填原则的延伸)。
+ *  - descs:newPath 上新建/需补描述的层级,键=该级地名,值=描述(可省,写不出不编)。
  */
 export interface SceneReparent {
   node: string[];
@@ -620,11 +645,6 @@ export type SceneOp =
 export interface SummaryDelta {
   /** 本楼层叙事摘要正文 */
   summary?: string;
-  /**
-   * 本次 JSON 实际有效输出的状态字段清单(机器可读的意图声明,便于日志/校验)。
-   * 只是清单,不能代替对应的实际操作;程序不依赖它做状态变更。
-   */
-  stateChanges?: string[];
   /** 覆盖型:故事内当前时间(直接写新值)。仅在正文无时间标签、需 AI 兜底时使用 */
   time?: string;
   /** 本段起始时间(仅正文缺 <bbs_start> 标签时让 AI 补) */
@@ -681,6 +701,14 @@ export interface SummaryDelta {
     /** 沉降为仅关键词触发(短序号 d1/d2 或稳定 id) */
     archive?: string[];
     /** 删除(短序号 d1/d2 或稳定 id) */
+    remove?: string[];
+  };
+  /** 指令型:了解清单增删改(可选;只记角色亲耳听到/亲眼看到/听人说的主角的事) */
+  knowledge?: {
+    add?: { who: string; text: string }[];
+    /** 短序号 k1/k2 或稳定 id */
+    update?: { id: string; text: string }[];
+    /** 短序号 k1/k2 或稳定 id */
     remove?: string[];
   };
   /**
@@ -751,5 +779,7 @@ export interface StoredDelta {
     /** 删除(稳定 id) */
     remove?: string[];
   };
+  /** 了解清单:按顺序施加的操作日志(AI 与手动共用) */
+  knowledge?: KnowledgeOp[];
   varOps?: VarOp[];
 }
