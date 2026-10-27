@@ -139,7 +139,7 @@ export interface UiPrefs {
   showTopBar: boolean;
   /** 在聊天框上方注入「快速回复」式按钮,点击打开柏宝书。默认关。 */
   showQuickReply: boolean;
-  /** 在每条 AI 楼层内注入摘要锚点(查看该楼摘要数据 + 标记番外)。默认关。 */
+  /** 在每条 AI 楼层内注入摘要锚点(查看该楼摘要数据 + 收藏与标签)。默认关。 */
   showFloorPanel: boolean;
   /** 屏幕边缘悬浮球,点击打开柏宝书。默认关。 */
   showOrb: boolean;

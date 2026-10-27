@@ -60,10 +60,13 @@ function onNavClick(id: string) {
   border-bottom: 1px solid var(--bbs-line);
 }
 .bbs-nav.is-top .bbs-nav-item {
+  flex: 1;
+  min-width: 0;
+  justify-content: center;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 14px;
+  gap: 6px;
+  padding: 7px 8px;
   border: 0;
   border-radius: var(--bbs-radius-pill);
   background: transparent;

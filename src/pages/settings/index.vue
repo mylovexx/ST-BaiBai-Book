@@ -834,7 +834,7 @@ function exportPublicApiDocument() {
           <span class="bbs-field-label">启用楼层界面</span>
           <input v-model="ui.showFloorPanel" type="checkbox" class="bbs-checkbox" />
         </label>
-        <p class="bbs-field-hint">在每条 AI 楼层下方加一个界面:查看该楼摘要与数据变动,并可一键标记「番外」。标为番外的楼层被记忆系统彻底忽略(不摘要、不总结、不注入),适合小剧场/番外篇;取消番外即恢复。</p>
+        <p class="bbs-field-hint">在每条 AI 楼层下方加一个界面:查看该楼摘要与数据变动,并可收藏、添加标题和标签。在「收藏」页可按标签查看、预览或跳转楼层。「番外」标签会让该楼不参与摘要、总结和记忆注入;移除该标签即恢复,取消收藏仍保留番外状态。</p>
 
         <!-- 屏幕悬浮球:配置项多,收进可收缩小分组 -->
         <Collapsible title="屏幕悬浮球" :open="false">
@@ -1145,8 +1145,8 @@ function exportPublicApiDocument() {
       <Collapsible title="自定义清洗标签" :open="false">
         <p class="bbs-field-hint">
           正文里若混入其它插件/世界书写的格式块(如状态栏 <code>&lt;snow&gt;…&lt;/snow&gt;</code>),
-          可在此填入标签名(只填 <code>snow</code>,不带尖括号),摘要、向量索引与召回时会把整块连内容一并删掉。
-          调整后对**召回**即时生效(向量库存原文、召回再清洗),无需重建索引。
+          可在此填入标签名(只填 <code>snow</code>,不带尖括号),摘要、向量召回注入与收藏正文预览会把整块连内容一并删掉。
+          调整后对召回和收藏正文预览即时生效(向量库存原文、召回再清洗),无需重建索引。
         </p>
         <div class="bbs-striptag-bar">
           <input

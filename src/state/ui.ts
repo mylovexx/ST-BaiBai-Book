@@ -47,7 +47,7 @@ interface UiState {
   showTopBar: boolean;
   /** 聊天框上方快速回复式按钮(默认关) */
   showQuickReply: boolean;
-  /** 楼层内摘要锚点(查看该楼数据 + 标番外,默认关) */
+  /** 楼层内摘要锚点(查看该楼数据 + 收藏与标签,默认关) */
   showFloorPanel: boolean;
   /** 屏幕边缘悬浮球(默认关) */
   showOrb: boolean;

@@ -1,4 +1,5 @@
 import type { Component } from 'vue';
+import Favorites from './favorites/index.vue';
 import Items from './items/index.vue';
 import Npcs from './npcs/index.vue';
 import Scenes from './scenes/index.vue';
@@ -22,6 +23,7 @@ export interface PageDef {
  */
 export const PAGES: PageDef[] = [
   { id: 'summary', label: '摘要', component: Summary },
+  { id: 'favorites', label: '收藏', component: Favorites },
   { id: 'items', label: '物品', component: Items },
   { id: 'scenes', label: '场景', component: Scenes },
   { id: 'npcs', label: '角色', component: Npcs },

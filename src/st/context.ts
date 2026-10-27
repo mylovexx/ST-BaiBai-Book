@@ -14,11 +14,14 @@ export interface STMessage {
   send_date?: string;
   /** 当前显示的 swipe 页码(多页 AI 回复时)。单页/无 swipe 时可能为 undefined,按 0 处理 */
   swipe_id?: number;
-  /** 消息私有数据。柏宝书在这里存隐藏、叶子摘要、番外与内部提示楼标记。 */
+  /** ST 切换 swipe 时会恢复该页 extra,收藏需同步这些备份。 */
+  swipe_info?: Array<{ extra?: STMessage['extra']; [key: string]: unknown }>;
+  /** 消息私有数据。柏宝书在这里存隐藏、叶子摘要、收藏、番外与内部提示楼标记。 */
   extra?: Record<string, unknown> & {
     bbs_leaf?: import('@/memory/types').LeafExtra;
     bbs_hidden?: boolean;
     bbs_omit?: boolean;
+    bbs_favorite?: import('@/favorites/store').FavoriteExtra;
     bbs_internal_notice?: 'backlog';
   };
 }
@@ -165,6 +168,28 @@ export function getContext(): STContext | null {
   } catch {
     return null;
   }
+}
+
+/** 只定位消息,不改变它参与上下文的隐藏状态。 */
+export async function jumpToFloor(floor: number): Promise<boolean> {
+  const ctx = getContext();
+  const chatId = ctx?.getCurrentChatId?.();
+  const message = ctx?.chat?.[floor];
+  if (!ctx || !chatId || !Number.isInteger(floor) || floor < 0 || !message) return false;
+  const current = () => getContext()?.getCurrentChatId?.() === chatId && getContext()?.chat?.[floor] === message;
+  const locate = () => current() ? document.querySelector<HTMLElement>(`#chat .mes[mesid="${floor}"]`) : null;
+  let element = locate();
+  if (!element && ctx.executeSlashCommandsWithOptions) {
+    try {
+      await ctx.executeSlashCommandsWithOptions(`/chat-jump ${floor}`);
+    } catch {
+      // 部分宿主不支持命令,若消息已加载仍可用 DOM 定位。
+    }
+    element = locate();
+  }
+  if (!element) return false;
+  element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  return true;
 }
 
 /**

@@ -3,7 +3,7 @@
  * 楼内摘要面板(挂在每条 AI 楼的 shadow 内,由 floorPanel.ts 逐楼挂载)。
  *
  * 形态:一张与摘要页同源的卡片(.bbs-summary-card 语言)。
- *   - 卡片头(锚点):严格单行 —— 楼号 + 摘要预览 + 番外键 + 单楼摘要键。
+ *   - 卡片头(锚点):严格单行 —— 楼号 + 摘要预览 + 收藏键 + 单楼摘要键。
  *   - 卡片体(抽屉):grid 0fr↔1fr 高度过渡(同 SummaryNode.vue,内容常驻不脱流,无闪烁)。
  *     变动按类型分组、以「标签流」横向排列。
  *
@@ -14,15 +14,17 @@
  * 数据:chat 非 reactive。leaf 返回浅拷贝(新引用)+ 追踪 sig.tick / derivedMeta.rev,
  *   任何来源(ST 事件、主界面摘要、楼内编辑)的变化都能刷新。
  */
-import { computed, nextTick, reactive, ref, watch } from 'vue';
+import { computed, nextTick, reactive, ref, shallowRef, watch } from 'vue';
 import Icon from '@/components/Icon.vue';
 import BbsSelect from '@/components/BbsSelect.vue';
 import { NPC_AFFINITY_FIELDS, affinityLevelFromInput, fmtNpcAffinity } from '@/memory/npcRelations';
 import ConfirmDialog from '@/components/ConfirmDialog.vue';
+import FavoriteEditor from '@/components/FavoriteEditor.vue';
+import { captureFavoriteTarget, favoriteSaving, favoriteTargetCurrent, isFavorite, type FavoriteTarget } from '@/favorites/store';
 import { getContext, type STMessage } from '@/st/context';
 import { toast } from '@/st/toast';
 import { getLeaf, leafValid, deleteLeafAt, editLeafFull, planContentById, describeVarOp } from '@/memory/apply';
-import { engineState, floorBackfillState, regenerateFloor, setFloorOmit, summarizeFloor } from '@/memory/engine';
+import { engineState, floorBackfillState, regenerateFloor, summarizeFloor } from '@/memory/engine';
 import { derivedMeta } from '@/memory/store';
 import { ui } from '@/state/ui';
 import type { LeafExtra, StoredDelta, ItemDelta, NpcDelta, VarOp, JsonValue } from '@/memory/types';
@@ -60,6 +62,18 @@ const valid = computed(() => {
 const d = computed<StoredDelta | null>(() => leaf.value?.delta ?? null);
 
 const expanded = ref(false);
+const favoriteEditing = shallowRef<FavoriteTarget | null>(null);
+const favoriteActive = computed(() => {
+  void props.sig.tick;
+  void derivedMeta.rev;
+  return isFavorite(msg.value);
+});
+function toggleFavoriteEditor() {
+  favoriteEditing.value = favoriteEditing.value ? null : captureFavoriteTarget(props.floor);
+}
+watch([() => props.sig.tick, () => derivedMeta.rev], () => {
+  if (favoriteEditing.value && !favoriteTargetCurrent(favoriteEditing.value)) favoriteEditing.value = null;
+});
 const busy = ref(false);
 const regenerateConfirmOpen = ref(false);
 
@@ -612,16 +626,6 @@ watch([expanded, omit, leaf], () => {
   if (!expanded.value || omit.value || !leaf.value) confirmingDelete.value = false;
   if (omit.value || !valid.value) regenerateConfirmOpen.value = false;
 });
-async function toggleOmit() {
-  if (busy.value || engineState.running) return;
-  busy.value = true;
-  try {
-    await setFloorOmit(props.floor, !omit.value);
-  } finally {
-    busy.value = false;
-  }
-}
-
 function requestSummary() {
   if (summaryActionDisabled.value) return;
   if (valid.value && leaf.value) {
@@ -678,14 +682,17 @@ const groups = computed(() => [
           <span class="bbs-fp-preview" :class="{ 'is-muted': previewMuted }">{{ previewText }}</span>
         </span>
         <button
-          class="bbs-fp-omitbtn"
-          :class="{ 'is-active': omit }"
+          class="bbs-fp-favoritebtn"
+          :class="{ 'is-active': favoriteActive }"
           type="button"
-          :title="omit ? '取消番外(恢复参与记忆)' : '标为番外(此楼不参与摘要/总结/注入)'"
-          :disabled="busy || engineState.running"
-          @click.stop="toggleOmit"
+          :title="favoriteActive ? '编辑收藏标题与标签' : '收藏此楼层'"
+          :aria-label="favoriteActive ? '编辑收藏标题与标签' : '收藏此楼层'"
+          :aria-pressed="favoriteActive"
+          :aria-expanded="!!favoriteEditing"
+          :disabled="busy || favoriteSaving"
+          @click.stop="toggleFavoriteEditor"
         >
-          <Icon name="sparkles" />
+          <Icon name="favorites" />
         </button>
         <button
           class="bbs-fp-summarybtn"
@@ -699,6 +706,8 @@ const groups = computed(() => [
           <Icon v-else name="search" />
         </button>
       </header>
+
+      <FavoriteEditor v-if="favoriteEditing" :target="favoriteEditing" @close="favoriteEditing = null" />
 
       <!-- 卡片体 = 抽屉(grid 高度过渡) -->
       <div class="bbs-fp-drawer" :class="{ 'is-open': expanded }">
@@ -923,7 +932,7 @@ const groups = computed(() => [
   border-left: 3px solid var(--bbs-ink-muted);
 }
 
-/* 卡片头:左侧两行主区(楼号+时间 / 预览)+ 右侧番外键、单楼摘要键 */
+/* 卡片头:左侧两行主区(楼号+时间 / 预览)+ 右侧收藏键、单楼摘要键 */
 .bbs-fp-head {
   display: flex;
   align-items: center;
@@ -991,7 +1000,7 @@ const groups = computed(() => [
   color: var(--bbs-ink-muted);
   font-style: italic;
 }
-.bbs-fp-omitbtn,
+.bbs-fp-favoritebtn,
 .bbs-fp-summarybtn {
   flex: 0 0 auto;
   display: inline-flex;
@@ -1010,17 +1019,17 @@ const groups = computed(() => [
     color var(--bbs-dur) var(--bbs-ease),
     background var(--bbs-dur) var(--bbs-ease);
 }
-.bbs-fp-omitbtn:hover:not(:disabled),
+.bbs-fp-favoritebtn:hover:not(:disabled),
 .bbs-fp-summarybtn:hover:not(:disabled) {
   color: var(--bbs-accent);
   background: var(--bbs-surface-2);
 }
-.bbs-fp-omitbtn:disabled,
+.bbs-fp-favoritebtn:disabled,
 .bbs-fp-summarybtn:disabled {
   opacity: 0.5;
   cursor: default;
 }
-.bbs-fp-omitbtn.is-active {
+.bbs-fp-favoritebtn.is-active {
   color: var(--bbs-accent);
   background: var(--bbs-accent-soft);
 }
