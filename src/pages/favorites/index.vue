@@ -171,8 +171,13 @@ onUnmounted(() => unbind.forEach(off => off()));
 .bbs-favorite-tag { padding: 3px 7px; border-radius: var(--bbs-radius-sm); background: var(--bbs-surface-2); color: var(--bbs-ink-soft); font-size: 11px; overflow-wrap: anywhere; }
 .bbs-favorite-excerpt { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; margin: 10px 0; color: var(--bbs-ink-soft); font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
 .bbs-favorite-excerpt.is-muted { color: var(--bbs-ink-muted); }
-.bbs-favorite-actions { display: flex; flex-wrap: wrap; gap: 7px; }
-.bbs-favorite-actions .bbs-btn { padding: 6px 10px; }
+.bbs-favorite-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.bbs-favorite-actions .bbs-btn { gap: 4px; padding: 6px 8px; }
 .bbs-favorite-preview { margin-top: 12px; padding: 12px; border: 1px solid var(--bbs-line); border-radius: var(--bbs-radius-sm); background: var(--bbs-surface-2); }
 .bbs-favorite-preview-text { margin: 0; max-height: 50vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--bbs-ink); font-size: 13px; line-height: 1.8; }
+
+@media (max-width: 640px) {
+  .bbs-favorite-actions { flex-wrap: nowrap; }
+  .bbs-favorite-actions .bbs-btn { flex: 1 1 0; min-width: 0; min-height: 32px; justify-content: center; padding: 6px 4px; font-size: 12px; }
+}
 </style>
