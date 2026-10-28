@@ -140,7 +140,7 @@ onUnmounted(() => unbind.forEach(off => off()));
           <button class="bbs-btn" type="button" :disabled="actionDisabled" @click="openEdit(row.floor)"><Icon name="edit" />编辑</button>
           <button class="bbs-btn" type="button" :disabled="actionDisabled" :aria-expanded="preview?.floor === row.floor" @click="togglePreview(row.floor)"><Icon name="eye" />{{ preview?.floor === row.floor ? '收起' : '预览' }}</button>
           <button class="bbs-btn" type="button" :disabled="actionDisabled" @click="jump(row.floor)"><Icon name="navigate" />跳转</button>
-          <button class="bbs-btn" type="button" :disabled="actionDisabled || editing !== null || !!(row.message.extra?.bbs_omit && !readFavorite(row.message))" :title="row.message.extra?.bbs_omit ? '取消收藏保留番外状态;移除番外标签请点编辑' : '取消收藏'" aria-label="取消收藏" @click="remove(row.floor)"><Icon name="favorites" />收藏</button>
+          <button class="bbs-btn" type="button" :disabled="actionDisabled || editing !== null || !!(row.message.extra?.bbs_omit && !readFavorite(row.message))" :title="row.message.extra?.bbs_omit ? '删除收藏保留番外状态;移除番外标签请点编辑' : '删除收藏'" aria-label="删除收藏" @click="remove(row.floor)"><Icon name="trash" />删除</button>
         </div>
         <FavoriteEditor v-if="editing?.floor === row.floor" :target="editing" @close="editing = null" />
         <div v-if="preview?.floor === row.floor" class="bbs-favorite-preview">
