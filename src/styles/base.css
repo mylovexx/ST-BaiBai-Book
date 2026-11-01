@@ -373,8 +373,8 @@
 .bbs-summary-meta {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  align-items: start;
-  gap: 8px;
+  align-items: center;
+  gap: 4px;
   margin-bottom: 6px;
 }
 
@@ -382,22 +382,29 @@
   display: flex;
   align-items: center;
   min-width: 0;
-  gap: 8px;
-  flex-wrap: wrap;
+  gap: 4px;
+  flex-wrap: nowrap;
+  white-space: nowrap;
 }
 
-/* 窄屏换行时收藏键仍紧邻来源楼层,避免误认成其他标签的操作。 */
+/* 收藏键紧邻来源楼层,避免误认成其他标签的操作。 */
 .bbs-summary-floor {
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: 2px;
+  gap: 0;
 }
 
-/* 绝对时间作题首文本,line-height:1 让它与同行等高标签的视觉中心对齐 */
+/* 日期占满第二行,过长时省略以保持卡片题首高度稳定。 */
 .bbs-summary-dateline,
 .bbs-summary-time {
-  line-height: 1;
+  grid-column: 1 / -1;
+  grid-row: 2;
+  min-width: 0;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* 摘要题首:故事内时间升为主标题,稍大、半粗、tabular 数字像账册日期 */
@@ -448,8 +455,9 @@
 .bbs-summary-rel {
   box-sizing: border-box;
   height: 22px;
-  display: inline-flex;
-  align-items: center;
+  display: block;
+  min-width: 0;
+  line-height: 20px;
   padding: 0 8px;
   font-size: 11px;
   font-weight: 600;
@@ -457,6 +465,9 @@
   color: var(--bbs-accent);
   background: var(--bbs-accent-soft);
   border: 1px solid var(--bbs-accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .bbs-summary-stale {
@@ -472,7 +483,7 @@
   margin-left: auto;
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: 0;
   opacity: 0;
   transition: opacity 0.15s;
 }
@@ -551,22 +562,6 @@
   color: var(--bbs-ink);
   font-size: 13px;
   line-height: 1.8;
-}
-
-/* 深层缩进会收窄卡片,操作键独占题首才能始终留在右上角。 */
-@container (max-width: 270px) {
-  .bbs-summary-meta {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .bbs-summary-acts {
-    grid-row: 1;
-    justify-self: end;
-  }
-
-  .bbs-summary-meta:has(.bbs-summary-acts) .bbs-summary-labels {
-    grid-row: 2;
-  }
 }
 
 /* —— 展开开关:卡片底部整条(而非左侧小箭头),整条可点、目标大(移动端友好),
@@ -649,13 +644,42 @@
   }
 }
 
-/* 窄屏:绝对时间(纯文本较长)排到末尾独占一行,首行只留标签 + 操作键 */
+/* 手机端减少标签内距与按钮宽度,给日期以外的首行内容留足空间。 */
 @media (max-width: 640px) {
+  .bbs-summary-card:has(.bbs-summary-meta) {
+    padding: 12px 10px;
+  }
 
-  .bbs-summary-dateline,
-  .bbs-summary-time {
-    order: 99;
-    flex-basis: 100%;
+  .bbs-summary-meta .bbs-summary-badge,
+  .bbs-summary-meta .bbs-summary-loc {
+    min-width: 32px;
+    padding: 0 5px;
+  }
+
+  .bbs-summary-meta .bbs-summary-rel {
+    padding: 0 5px;
+  }
+
+  .bbs-summary-meta {
+    column-gap: 2px;
+  }
+
+  .bbs-summary-acts {
+    opacity: 1;
+  }
+
+  .bbs-summary-meta .bbs-summary-act {
+    width: 28px;
+    height: 28px;
+    font-size: 14px;
+  }
+}
+
+/* 窄卡片压紧触达区,首行标签和操作键保持同行。 */
+@container (max-width: 270px) {
+  .bbs-summary-meta .bbs-summary-act {
+    width: 24px;
+    height: 28px;
   }
 }
 

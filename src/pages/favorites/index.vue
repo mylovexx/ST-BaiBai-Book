@@ -174,13 +174,13 @@ onUnmounted(() => unbind.forEach(off => off()));
 .bbs-favorites-filter-hint { flex-basis: 100%; color: var(--bbs-ink-muted); font-size: 12px; }
 .bbs-favorites-list { display: grid; gap: 12px; }
 .bbs-favorite-card { min-width: 0; }
-.bbs-favorite-head { display: flex; align-items: flex-start; gap: 10px; }
+.bbs-favorite-head { display: flex; align-items: center; gap: 8px; }
 .bbs-favorite-head > .bbs-summary-loc { flex: none; }
-.bbs-favorite-title { flex: 1; min-width: 0; margin: 0; font-size: 15px; font-weight: 600; color: var(--bbs-ink); overflow-wrap: anywhere; }
-.bbs-favorite-nav { display: inline-flex; flex: none; align-items: center; gap: 2px; margin-left: auto; }
-.bbs-favorite-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-.bbs-favorite-tag { padding: 3px 7px; border-radius: var(--bbs-radius-sm); background: var(--bbs-surface-2); color: var(--bbs-ink-soft); font-size: 11px; overflow-wrap: anywhere; }
-.bbs-favorite-excerpt { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; margin: 10px 0; color: var(--bbs-ink-soft); font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+.bbs-favorite-title { flex: 1; min-width: 0; margin: 0; font-size: 15px; font-weight: 600; line-height: 1.4; color: var(--bbs-ink); overflow-wrap: anywhere; }
+.bbs-favorite-nav { display: inline-flex; flex: none; align-items: center; gap: 0; margin-left: auto; }
+.bbs-favorite-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.bbs-favorite-tag { padding: 2px 6px; border-radius: var(--bbs-radius-sm); background: var(--bbs-surface-2); color: var(--bbs-ink-soft); font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
+.bbs-favorite-excerpt { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; margin: 6px 0; color: var(--bbs-ink-soft); font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
 .bbs-favorite-excerpt.is-muted { color: var(--bbs-ink-muted); }
 .bbs-favorite-actions { display: flex; flex-wrap: wrap; gap: 4px; }
 .bbs-favorite-actions .bbs-btn { gap: 4px; padding: 6px 8px; }

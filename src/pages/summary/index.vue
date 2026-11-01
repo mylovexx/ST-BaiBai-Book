@@ -743,15 +743,18 @@ async function runDeleteSelected() {
 
 /** 行的展示时间:新数据用 timeStart/timeEnd 合成并压缩;旧数据回退到已固化的 timeLabel(也压缩一次) */
 function rowTime(r: SummaryRow): string {
-  if (r.timeStart || r.timeEnd) return formatRange(r.timeStart, r.timeEnd);
-  return r.timeLabel ? compactTimeLabel(r.timeLabel) : '';
+  const time = r.timeStart || r.timeEnd ? formatRange(r.timeStart, r.timeEnd)
+    : r.timeLabel ? compactTimeLabel(r.timeLabel) : '';
+  const event = r.timeEnd || r.timeStart || (r.timeLabel ? splitTimeLabel(r.timeLabel).end : '') || '';
+  // 周几随日期显示,首行只保留短相对时间以容纳楼层操作键。
+  const weekday = r.kind === 'leaf' ? weekdayLabel(event) : '';
+  return time && weekday ? time + ' · ' + weekday : time;
 }
-/** 行的相对时间前缀(如「昨天·周三」):仅叶子(单楼摘要)显示;总结跨多楼、相对时间无意义,返回空串 */
+/** 行的相对时间前缀(如「昨天」):仅叶子(单楼摘要)显示;总结跨多楼、相对时间无意义,返回空串 */
 function rowRelative(r: SummaryRow): string {
   if (r.kind !== 'leaf') return '';
   const event = r.timeEnd || r.timeStart || (r.timeLabel ? splitTimeLabel(r.timeLabel).end : '') || '';
-  // 周几并入相对前缀(标准公历带年份才有);与注入端口径一致
-  return [relativeTimeLabel(event, derivedMeta.latestStoryTime), weekdayLabel(event)].filter(Boolean).join('·');
+  return relativeTimeLabel(event, derivedMeta.latestStoryTime);
 }
 
 // 当前时间:优先读正文标签实时算出的「故事内最新时间」(不受最新楼是否已摘影响);
@@ -1195,21 +1198,19 @@ provide(SUMMARY_CTX, {
         <div class="bbs-summary-main">
           <header class="bbs-summary-meta">
             <span class="bbs-summary-labels">
-              <!-- 总结:层级标签 + 范围药丸 + 相对时间(留题首行)+ 绝对时间(窄屏换行) -->
+              <!-- 总结跨多楼,层级与范围留在首行便于定位。 -->
               <template v-if="r.kind === 'comp'">
                 <span class="bbs-summary-badge">{{ levelLabel(r.level, r.imported) }}</span>
                 <span class="bbs-summary-loc">{{ floorLabel(r) }}</span>
                 <span v-if="rowRelative(r)" class="bbs-summary-rel">({{ rowRelative(r) }})</span>
-                <span v-if="rowTime(r)" class="bbs-summary-time">{{ rowTime(r) }}</span>
               </template>
-              <!-- 摘要:相对时间 + 楼层号都做成等高小标签(盒子居中,免去 CJK 基线下沉),绝对时间作题首文本(窄屏换行) -->
+              <!-- 相对时间与楼层同高,日期独立一行避免挤开操作键。 -->
               <template v-else>
-                <span v-if="rowRelative(r)" class="bbs-summary-rel">{{ rowRelative(r) }}</span>
+                <span v-if="rowRelative(r)" class="bbs-summary-rel" :title="rowRelative(r)">{{ rowRelative(r) }}</span>
                 <span class="bbs-summary-floor">
                   <span class="bbs-summary-loc">{{ floorLabel(r) }}</span>
                   <QuickFavoriteButton v-if="!selectMode" :floor="r.floorLo" />
                 </span>
-                <span v-if="rowTime(r)" class="bbs-summary-dateline">{{ rowTime(r) }}</span>
               </template>
               <span v-if="r.stale" class="bbs-summary-stale">待更新</span>
             </span>
@@ -1262,6 +1263,9 @@ provide(SUMMARY_CTX, {
               >
                 <Icon name="trash" />
               </button>
+            </span>
+            <span v-if="rowTime(r)" :class="r.kind === 'comp' ? 'bbs-summary-time' : 'bbs-summary-dateline'" :title="rowTime(r)">
+              {{ rowTime(r) }}
             </span>
           </header>
           <p class="bbs-summary-text">
@@ -2319,14 +2323,6 @@ provide(SUMMARY_CTX, {
   .bbs-state {
     flex-direction: column;
     gap: 8px;
-  }
-
-  /* 摘要题首窄屏排布:绝对时间(纯文本)较长,会把相对时间+楼层标签挤满首行、把操作键顶到第二行。
-     用 order 把绝对时间排到末尾并 flex-basis:100% 独占一行,首行只留「相对时间标签 + 楼层标签 + 操作键」。 */
-  .bbs-summary-dateline,
-  .bbs-summary-time {
-    order: 99;
-    flex-basis: 100%;
   }
 
   /* 摘要工具行:窄屏下「多选/立即总结」收成纯图标(藏文字、去边框),

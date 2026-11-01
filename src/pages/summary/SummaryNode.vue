@@ -42,15 +42,13 @@ const isPreviewing = computed(() => props.node.kind === 'leaf' && ctx.previewFlo
               <span class="bbs-summary-badge">{{ ctx.levelLabel(row.level, row.imported) }}</span>
               <span class="bbs-summary-loc">{{ ctx.floorLabel(row) }}</span>
               <span v-if="ctx.rowRelative(row)" class="bbs-summary-rel">({{ ctx.rowRelative(row) }})</span>
-              <span v-if="ctx.rowTime(row)" class="bbs-summary-time">{{ ctx.rowTime(row) }}</span>
             </template>
             <template v-else>
-              <span v-if="ctx.rowRelative(row)" class="bbs-summary-rel">{{ ctx.rowRelative(row) }}</span>
+              <span v-if="ctx.rowRelative(row)" class="bbs-summary-rel" :title="ctx.rowRelative(row)">{{ ctx.rowRelative(row) }}</span>
               <span class="bbs-summary-floor">
                 <span class="bbs-summary-loc">{{ ctx.floorLabel(row) }}</span>
                 <QuickFavoriteButton :floor="row.floorLo" />
               </span>
-              <span v-if="ctx.rowTime(row)" class="bbs-summary-dateline">{{ ctx.rowTime(row) }}</span>
             </template>
           </span>
           <!-- 操作键:编辑对任何层级开放(结构安全:不改 id、不断链;叶子改完向量索引自动重 embed,
@@ -76,6 +74,9 @@ const isPreviewing = computed(() => props.node.kind === 'leaf' && ctx.previewFlo
             <button v-if="!isChild" class="bbs-summary-act bbs-summary-del" type="button" :title="row.imported ? '删除导入历史' : row.kind === 'comp' ? '删除总结(下层会展开)' : '删除摘要'" @click="ctx.onDelete(row)">
               <Icon name="trash" />
             </button>
+          </span>
+          <span v-if="ctx.rowTime(row)" :class="row.kind === 'comp' ? 'bbs-summary-time' : 'bbs-summary-dateline'" :title="ctx.rowTime(row)">
+            {{ ctx.rowTime(row) }}
           </span>
         </header>
         <p class="bbs-summary-text">{{ row.text }}</p>
@@ -150,6 +151,13 @@ const isPreviewing = computed(() => props.node.kind === 'leaf' && ctx.previewFlo
 .bbs-node-children.is-open .bbs-node-children-body {
   opacity: 1;
   transform: none;
+}
+/* 手机端多层展开时,减少缩进给首行标签和操作键留足空间。 */
+@media (max-width: 640px) {
+  .bbs-node-children-body {
+    margin-left: 8px;
+    padding-left: 8px;
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   .bbs-node-children,
