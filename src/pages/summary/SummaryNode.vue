@@ -26,6 +26,7 @@ const children = computed<ViewNode[]>(() => {
 const expandable = computed(() => children.value.length > 0);
 const isExpanded = computed(() => ctx.expanded.value.has(props.node.id));
 const isChild = computed(() => props.depth > 0);
+const isPreviewing = computed(() => props.node.kind === 'leaf' && ctx.previewFloor.value === row.value.floorLo);
 </script>
 
 <template>
@@ -36,24 +37,39 @@ const isChild = computed(() => props.depth > 0);
     >
       <div class="bbs-summary-main">
         <header class="bbs-summary-meta">
-          <template v-if="row.kind === 'comp'">
-            <span class="bbs-summary-badge">{{ ctx.levelLabel(row.level, row.imported) }}</span>
-            <span class="bbs-summary-loc">{{ ctx.floorLabel(row) }}</span>
-            <span v-if="ctx.rowRelative(row)" class="bbs-summary-rel">({{ ctx.rowRelative(row) }})</span>
-            <span v-if="ctx.rowTime(row)" class="bbs-summary-time">{{ ctx.rowTime(row) }}</span>
-          </template>
-          <template v-else>
-            <span v-if="ctx.rowRelative(row)" class="bbs-summary-rel">{{ ctx.rowRelative(row) }}</span>
-            <span class="bbs-summary-floor">
+          <span class="bbs-summary-labels">
+            <template v-if="row.kind === 'comp'">
+              <span class="bbs-summary-badge">{{ ctx.levelLabel(row.level, row.imported) }}</span>
               <span class="bbs-summary-loc">{{ ctx.floorLabel(row) }}</span>
-              <QuickFavoriteButton :floor="row.floorLo" />
-            </span>
-            <span v-if="ctx.rowTime(row)" class="bbs-summary-dateline">{{ ctx.rowTime(row) }}</span>
-          </template>
+              <span v-if="ctx.rowRelative(row)" class="bbs-summary-rel">({{ ctx.rowRelative(row) }})</span>
+              <span v-if="ctx.rowTime(row)" class="bbs-summary-time">{{ ctx.rowTime(row) }}</span>
+            </template>
+            <template v-else>
+              <span v-if="ctx.rowRelative(row)" class="bbs-summary-rel">{{ ctx.rowRelative(row) }}</span>
+              <span class="bbs-summary-floor">
+                <span class="bbs-summary-loc">{{ ctx.floorLabel(row) }}</span>
+                <QuickFavoriteButton :floor="row.floorLo" />
+              </span>
+              <span v-if="ctx.rowTime(row)" class="bbs-summary-dateline">{{ ctx.rowTime(row) }}</span>
+            </template>
+          </span>
           <!-- 操作键:编辑对任何层级开放(结构安全:不改 id、不断链;叶子改完向量索引自动重 embed,
                总结不进向量库、只影响上下文注入);删除仅根行——删深层叶子会级联删整条祖先总结链 -->
           <span class="bbs-summary-acts">
-            <ForcedRecallButton v-if="row.kind === 'leaf'" :floor="row.floorLo" />
+            <template v-if="row.kind === 'leaf'">
+              <button class="bbs-summary-act" :class="{ 'is-active': isPreviewing }" type="button"
+                :disabled="ctx.jumping.value" :title="isPreviewing ? '收起楼层正文' : '预览楼层正文'"
+                :aria-label="isPreviewing ? '收起楼层正文' : '预览楼层正文'" :aria-expanded="isPreviewing"
+                @click.stop="ctx.togglePreview(row.floorLo)" @keydown.enter.stop @keydown.space.stop>
+                <Icon :name="isPreviewing ? 'eye-off' : 'eye'" />
+              </button>
+              <button class="bbs-summary-act" type="button" :disabled="ctx.jumping.value"
+                title="跳转到原文楼层" aria-label="跳转到原文楼层"
+                @click.stop="ctx.jumpFloor(row.floorLo)" @keydown.enter.stop @keydown.space.stop>
+                <Icon name="navigate" />
+              </button>
+              <ForcedRecallButton :floor="row.floorLo" :disabled="ctx.jumping.value" />
+            </template>
             <button class="bbs-summary-act" type="button" :title="row.imported ? '编辑导入历史' : row.kind === 'comp' ? '编辑总结' : '编辑摘要'" @click="ctx.openEdit(row)">
               <Icon name="edit" />
             </button>
@@ -63,6 +79,9 @@ const isChild = computed(() => props.depth > 0);
           </span>
         </header>
         <p class="bbs-summary-text">{{ row.text }}</p>
+        <div v-if="isPreviewing" class="bbs-floor-preview">
+          <p class="bbs-floor-preview-text">{{ ctx.previewBody.value || '该楼层暂无可预览正文' }}</p>
+        </div>
         <!-- 展开开关:卡片底部整条,标注「展开/收起下层 N 条」;展开态翻转文案 + 卡片描边点亮 -->
         <button
           v-if="expandable"

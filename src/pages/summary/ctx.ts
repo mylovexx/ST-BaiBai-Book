@@ -29,6 +29,11 @@ export interface SummaryCtx {
   selectMode: Ref<boolean>;
   searching: ComputedRef<boolean>;
   selectedIds: Ref<Set<string>>;
+  previewFloor: ComputedRef<number | null>;
+  previewBody: ComputedRef<string>;
+  jumping: Ref<boolean>;
+  togglePreview: (floor: number) => void;
+  jumpFloor: (floor: number) => Promise<void>;
   toggleExpand: (id: string) => void;
   toggleSelect: (id: string) => void;
   openEdit: (r: SummaryRow) => void;

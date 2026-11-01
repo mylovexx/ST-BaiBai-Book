@@ -64,6 +64,8 @@ const PATHS: Record<string, string> = {
   chevron: '<path d="M6 9.5 12 15.5 18 9.5"/>',
   // 前往地点:带长箭杆的向右箭头,区别于折叠用 chevron
   navigate: '<path d="M4 12h15"/><path d="m14 7 5 5-5 5"/>',
+  // 返回最新楼层:向下箭头停在底线,区别于单楼跳转。
+  latest: '<path d="M12 4v12M7 11l5 5 5-5M5 20h14"/>',
   // 搜索:放大镜
   search: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>',
   // 多选:勾选清单(左侧对勾 + 右侧行,一眼看出「勾选多条」)

@@ -4,6 +4,7 @@ import ConfirmDialog from '@/components/ConfirmDialog.vue';
 import ModalMask from '@/components/ModalMask.vue';
 import ForcedRecallButton from '@/components/ForcedRecallButton.vue';
 import QuickFavoriteButton from '@/components/QuickFavoriteButton.vue';
+import { captureFavoriteTarget, favoriteBody, favoriteTargetCurrent, type FavoriteTarget } from '@/favorites/store';
 import { addSummary, appendOpToLatestLeaf, deleteLeafAt, deleteSummary, deleteSummarySubtrees, editLeafAt, editPlan, editSummary, invalidateSummaryAncestors } from '@/memory/apply';
 import { apiSettings } from '@/api/settings';
 import { batchBackfill, batchState, cancelBatchBackfill, engineState, floorBackfillState, isAiFloor, resummarizeNow, summarizeFloor, summarizeSelected, syncHiddenNow } from '@/memory/engine';
@@ -12,9 +13,10 @@ import { compactTimeLabel, formatRange, splitTimeLabel } from '@/memory/timeTag'
 import { relativeTimeLabel, weekdayLabel } from '@/memory/timeRel';
 import { derivedMeta, memory, recomputeDerived } from '@/memory/store';
 import type { SceneFocus } from '@/memory/types';
-import { getContext } from '@/st/context';
+import { closeBook } from '@/state/ui';
+import { getContext, jumpToFloor } from '@/st/context';
 import { toast } from '@/st/toast';
-import { computed, nextTick, onMounted, onUnmounted, provide, ref } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, provide, ref, shallowRef, watch } from 'vue';
 import SummaryNode from './SummaryNode.vue';
 import { SUMMARY_CTX, type SummaryRow } from './ctx';
 
@@ -27,6 +29,7 @@ const resetViewStates = () => {
   expanded.value = new Set();
   searchQuery.value = '';
   searchOpen.value = false;
+  preview.value = null;
   closeImportHistory();
   exitSelectMode();
 };
@@ -396,6 +399,50 @@ const searchInput = ref<HTMLInputElement | null>(null);
 const selectMode = ref(false);
 const selectedIds = ref<Set<string>>(new Set());
 
+/* ---- 楼层正文预览 / 跳转:与收藏共用来源校验,删楼或切聊天后不串到同号新楼。 ---- */
+const preview = shallowRef<FavoriteTarget | null>(null);
+const jumping = ref(false);
+const previewFloor = computed(() => {
+  void derivedMeta.rev;
+  return preview.value && favoriteTargetCurrent(preview.value) ? preview.value.floor : null;
+});
+const previewBody = computed(() => {
+  void derivedMeta.rev;
+  return preview.value && favoriteTargetCurrent(preview.value) ? favoriteBody(preview.value.message) : '';
+});
+const latestFloor = computed(() => {
+  void derivedMeta.rev;
+  const ctx = getContext();
+  return ctx?.getCurrentChatId?.() ? (ctx.chat?.length ?? 0) - 1 : -1;
+});
+
+function togglePreview(floor: number) {
+  if (jumping.value) return;
+  if (previewFloor.value === floor) {
+    preview.value = null;
+    return;
+  }
+  preview.value = captureFavoriteTarget(floor);
+  if (!preview.value) toast('来源楼层已变化,请重新选择', 'warning');
+}
+async function jumpFloor(floor: number) {
+  if (jumping.value) return;
+  jumping.value = true;
+  try {
+    if (await jumpToFloor(floor)) closeBook();
+    else toast('无法定位该楼层,请确认楼层仍存在且宿主支持历史楼层跳转', 'warning');
+  } catch (error) {
+    toast(error instanceof Error ? error.message : String(error), 'error');
+  } finally { jumping.value = false; }
+}
+function jumpLatest() {
+  // 点击时读取宿主,确保生成中的新楼也能被定位。
+  void jumpFloor((getContext()?.chat?.length ?? 0) - 1);
+}
+watch(() => derivedMeta.rev, () => {
+  if (preview.value && !favoriteTargetCurrent(preview.value)) preview.value = null;
+});
+
 /* ---- 导入旧总结:第一版只接收粘贴文本 + 从 #0 起的覆盖截止楼层。 ---- */
 const importHistoryOpen = ref(false);
 const importHistoryText = ref('');
@@ -757,6 +804,7 @@ function isNested(id: string): boolean {
 }
 
 function openEdit(r: SummaryRow) {
+  preview.value = null;
   if (r.kind === 'leaf' && typeof r.msgIndex === 'number') {
     // 旧数据无 timeStart/timeEnd 时,从已固化的 timeLabel 拆出起止填入
     const fb = !r.timeStart && !r.timeEnd ? splitTimeLabel(r.timeLabel) : {};
@@ -787,6 +835,7 @@ function saveEdit() {
 // 注入递归卡片(SummaryNode)所需的状态、helper 与动作,免逐层 props 透传
 provide(SUMMARY_CTX, {
   byId, expanded, selectMode, searching, selectedIds,
+  previewFloor, previewBody, jumping, togglePreview, jumpFloor,
   toggleExpand, toggleSelect, openEdit, onDelete,
   nodeFloors, toRow, levelLabel, floorLabel, rowTime, rowRelative, highlightParts,
 });
@@ -949,7 +998,7 @@ provide(SUMMARY_CTX, {
     </div>
 
     <!-- ===== 摘要 ===== -->
-    <div class="bbs-section-head">
+    <div class="bbs-section-head bbs-summary-head">
       <div class="bbs-summary-heading">
         <h2 class="bbs-title bbs-title-sub">摘要</h2>
         <div class="bbs-token-estimate" title="按 UTF-8 字节数估算,不会请求后端">
@@ -958,6 +1007,16 @@ provide(SUMMARY_CTX, {
         </div>
       </div>
       <div class="bbs-summary-tools">
+        <button
+          class="bbs-btn bbs-btn-sm"
+          type="button"
+          :disabled="latestFloor < 0 || jumping"
+          title="回到最新楼层"
+          aria-label="回到最新楼层"
+          @click="jumpLatest"
+        >
+          <Icon name="latest" /><span class="bbs-btn-label">回到最新楼层</span>
+        </button>
         <!-- 搜索:点放大镜展开搜索框(平时收起不占版面);已展开则收起并清空 -->
         <button
           v-if="!selectMode"
@@ -1135,27 +1194,57 @@ provide(SUMMARY_CTX, {
         </span>
         <div class="bbs-summary-main">
           <header class="bbs-summary-meta">
-            <!-- 总结:层级标签 + 范围药丸 + 相对时间(留题首行)+ 绝对时间(窄屏换行) -->
-            <template v-if="r.kind === 'comp'">
-              <span class="bbs-summary-badge">{{ levelLabel(r.level, r.imported) }}</span>
-              <span class="bbs-summary-loc">{{ floorLabel(r) }}</span>
-              <span v-if="rowRelative(r)" class="bbs-summary-rel">({{ rowRelative(r) }})</span>
-              <span v-if="rowTime(r)" class="bbs-summary-time">{{ rowTime(r) }}</span>
-            </template>
-            <!-- 摘要:相对时间 + 楼层号都做成等高小标签(盒子居中,免去 CJK 基线下沉),绝对时间作题首文本(窄屏换行) -->
-            <template v-else>
-              <span v-if="rowRelative(r)" class="bbs-summary-rel">{{ rowRelative(r) }}</span>
-              <span class="bbs-summary-floor">
+            <span class="bbs-summary-labels">
+              <!-- 总结:层级标签 + 范围药丸 + 相对时间(留题首行)+ 绝对时间(窄屏换行) -->
+              <template v-if="r.kind === 'comp'">
+                <span class="bbs-summary-badge">{{ levelLabel(r.level, r.imported) }}</span>
                 <span class="bbs-summary-loc">{{ floorLabel(r) }}</span>
-                <QuickFavoriteButton v-if="!selectMode" :floor="r.floorLo" />
-              </span>
-              <span v-if="rowTime(r)" class="bbs-summary-dateline">{{ rowTime(r) }}</span>
-            </template>
-            <span v-if="r.stale" class="bbs-summary-stale">待更新</span>
+                <span v-if="rowRelative(r)" class="bbs-summary-rel">({{ rowRelative(r) }})</span>
+                <span v-if="rowTime(r)" class="bbs-summary-time">{{ rowTime(r) }}</span>
+              </template>
+              <!-- 摘要:相对时间 + 楼层号都做成等高小标签(盒子居中,免去 CJK 基线下沉),绝对时间作题首文本(窄屏换行) -->
+              <template v-else>
+                <span v-if="rowRelative(r)" class="bbs-summary-rel">{{ rowRelative(r) }}</span>
+                <span class="bbs-summary-floor">
+                  <span class="bbs-summary-loc">{{ floorLabel(r) }}</span>
+                  <QuickFavoriteButton v-if="!selectMode" :floor="r.floorLo" />
+                </span>
+                <span v-if="rowTime(r)" class="bbs-summary-dateline">{{ rowTime(r) }}</span>
+              </template>
+              <span v-if="r.stale" class="bbs-summary-stale">待更新</span>
+            </span>
             <!-- 操作键:编辑对任何命中行开放(结构安全;叶子改完向量自动重 embed,总结不进向量库);
                  删除仅根行(删深层会级联删祖先总结链);选择模式无操作 -->
             <span v-if="!selectMode" class="bbs-summary-acts">
-              <ForcedRecallButton v-if="r.kind === 'leaf'" :floor="r.floorLo" />
+              <template v-if="r.kind === 'leaf'">
+                <button
+                  class="bbs-summary-act"
+                  :class="{ 'is-active': previewFloor === r.floorLo }"
+                  type="button"
+                  :disabled="jumping"
+                  :title="previewFloor === r.floorLo ? '收起楼层正文' : '预览楼层正文'"
+                  :aria-label="previewFloor === r.floorLo ? '收起楼层正文' : '预览楼层正文'"
+                  :aria-expanded="previewFloor === r.floorLo"
+                  @click.stop="togglePreview(r.floorLo)"
+                  @keydown.enter.stop
+                  @keydown.space.stop
+                >
+                  <Icon :name="previewFloor === r.floorLo ? 'eye-off' : 'eye'" />
+                </button>
+                <button
+                  class="bbs-summary-act"
+                  type="button"
+                  :disabled="jumping"
+                  title="跳转到原文楼层"
+                  aria-label="跳转到原文楼层"
+                  @click.stop="jumpFloor(r.floorLo)"
+                  @keydown.enter.stop
+                  @keydown.space.stop
+                >
+                  <Icon name="navigate" />
+                </button>
+                <ForcedRecallButton :floor="r.floorLo" :disabled="jumping" />
+              </template>
               <button
                 class="bbs-summary-act"
                 type="button"
@@ -1181,6 +1270,9 @@ provide(SUMMARY_CTX, {
               <template v-else>{{ seg.t }}</template>
             </template>
           </p>
+          <div v-if="!selectMode && r.kind === 'leaf' && previewFloor === r.floorLo" class="bbs-floor-preview">
+            <p class="bbs-floor-preview-text">{{ previewBody || '该楼层暂无可预览正文' }}</p>
+          </div>
         </div>
       </article>
     </div>
@@ -1995,6 +2087,9 @@ provide(SUMMARY_CTX, {
 }
 
 /* —— 摘要区工具行:标题右侧「选择 / 立即总结」并排 —— */
+.bbs-summary-head {
+  flex-wrap: wrap;
+}
 .bbs-summary-heading {
   min-width: 0;
 }
@@ -2008,9 +2103,13 @@ provide(SUMMARY_CTX, {
   font-variant-numeric: tabular-nums;
 }
 .bbs-summary-tools {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
+  max-width: 100%;
+  margin-left: auto;
   gap: 8px;
 }
 .bbs-summary-tools .bbs-btn-sm {

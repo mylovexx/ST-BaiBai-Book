@@ -347,6 +347,7 @@
    scoped 样式不跨子组件边界(shadow DOM 内同理),故卡片视觉提到全局 base.css,
    两处渲染才一致——与 .bbs-btn / .bbs-modal 等跨页原子同款处置。 */
 .bbs-summary-card {
+  container-type: inline-size;
   border: 1px solid var(--bbs-line);
   border-radius: var(--bbs-radius);
   background: var(--bbs-surface);
@@ -370,10 +371,18 @@
 }
 
 .bbs-summary-meta {
-  display: flex;
-  align-items: center;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
   gap: 8px;
   margin-bottom: 6px;
+}
+
+.bbs-summary-labels {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
   flex-wrap: wrap;
 }
 
@@ -462,6 +471,7 @@
 .bbs-summary-acts {
   margin-left: auto;
   display: inline-flex;
+  align-items: center;
   gap: 2px;
   opacity: 0;
   transition: opacity 0.15s;
@@ -469,7 +479,8 @@
 
 .bbs-summary-card:hover .bbs-summary-acts,
 .bbs-summary-card:focus-within .bbs-summary-acts,
-.bbs-summary-acts:has(.bbs-force-button.is-forced) {
+.bbs-summary-acts:has(.bbs-force-button.is-forced),
+.bbs-summary-acts:has(.bbs-summary-act.is-active) {
   opacity: 1;
 }
 
@@ -494,6 +505,21 @@
   background: var(--bbs-surface-2);
 }
 
+.bbs-summary-act.is-active {
+  color: var(--bbs-accent);
+  background: var(--bbs-accent-soft);
+}
+
+.bbs-summary-act:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.bbs-summary-act:focus-visible {
+  outline: 2px solid var(--bbs-accent);
+  outline-offset: 2px;
+}
+
 .bbs-summary-del:hover {
   color: var(--bbs-danger);
   background: var(--bbs-danger-soft);
@@ -506,6 +532,41 @@
   letter-spacing: 0.025em;
   color: var(--bbs-ink-soft);
   white-space: pre-wrap;
+}
+
+.bbs-floor-preview {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--bbs-line);
+  border-radius: var(--bbs-radius-sm);
+  background: var(--bbs-surface-2);
+}
+
+.bbs-floor-preview-text {
+  margin: 0;
+  max-height: 50vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--bbs-ink);
+  font-size: 13px;
+  line-height: 1.8;
+}
+
+/* 深层缩进会收窄卡片,操作键独占题首才能始终留在右上角。 */
+@container (max-width: 270px) {
+  .bbs-summary-meta {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .bbs-summary-acts {
+    grid-row: 1;
+    justify-self: end;
+  }
+
+  .bbs-summary-meta:has(.bbs-summary-acts) .bbs-summary-labels {
+    grid-row: 2;
+  }
 }
 
 /* —— 展开开关:卡片底部整条(而非左侧小箭头),整条可点、目标大(移动端友好),

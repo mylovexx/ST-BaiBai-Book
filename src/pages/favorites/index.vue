@@ -129,7 +129,19 @@ onUnmounted(() => unbind.forEach(off => off()));
         <header class="bbs-favorite-head">
           <span class="bbs-summary-loc">#{{ row.floor }}</span>
           <h3 class="bbs-favorite-title">{{ row.title }}</h3>
-          <ForcedRecallButton class="bbs-favorite-force" :floor="row.floor" :disabled="actionDisabled" />
+          <span class="bbs-favorite-nav">
+            <button class="bbs-summary-act" :class="{ 'is-active': preview?.floor === row.floor }" type="button"
+              :disabled="actionDisabled" :title="preview?.floor === row.floor ? '收起楼层正文' : '预览楼层正文'"
+              :aria-label="preview?.floor === row.floor ? '收起楼层正文' : '预览楼层正文'"
+              :aria-expanded="preview?.floor === row.floor" @click="togglePreview(row.floor)">
+              <Icon :name="preview?.floor === row.floor ? 'eye-off' : 'eye'" />
+            </button>
+            <button class="bbs-summary-act" type="button" :disabled="actionDisabled"
+              title="跳转到原文楼层" aria-label="跳转到原文楼层" @click="jump(row.floor)">
+              <Icon name="navigate" />
+            </button>
+            <ForcedRecallButton :floor="row.floor" :disabled="actionDisabled" />
+          </span>
         </header>
         <div class="bbs-favorite-tags">
           <span v-for="tag in row.tags" :key="tag" class="bbs-favorite-tag">{{ tag }}</span>
@@ -138,13 +150,11 @@ onUnmounted(() => unbind.forEach(off => off()));
         <p class="bbs-favorite-excerpt" :class="{ 'is-muted': row.summaryState !== 'ready' }">{{ summaryHint(row) }}</p>
         <div class="bbs-favorite-actions">
           <button class="bbs-btn" type="button" :disabled="actionDisabled" @click="openEdit(row.floor)"><Icon name="edit" />编辑</button>
-          <button class="bbs-btn" type="button" :disabled="actionDisabled" :aria-expanded="preview?.floor === row.floor" @click="togglePreview(row.floor)"><Icon name="eye" />{{ preview?.floor === row.floor ? '收起' : '预览' }}</button>
-          <button class="bbs-btn" type="button" :disabled="actionDisabled" @click="jump(row.floor)"><Icon name="navigate" />跳转</button>
           <button class="bbs-btn" type="button" :disabled="actionDisabled || editing !== null || !!(row.message.extra?.bbs_omit && !readFavorite(row.message))" :title="row.message.extra?.bbs_omit ? '删除收藏保留番外状态;移除番外标签请点编辑' : '删除收藏'" aria-label="删除收藏" @click="remove(row.floor)"><Icon name="trash" />删除</button>
         </div>
         <FavoriteEditor v-if="editing?.floor === row.floor" :target="editing" @close="editing = null" />
-        <div v-if="preview?.floor === row.floor" class="bbs-favorite-preview">
-          <p class="bbs-favorite-preview-text">{{ previewBody || '该楼层暂无可预览正文' }}</p>
+        <div v-if="preview?.floor === row.floor" class="bbs-floor-preview">
+          <p class="bbs-floor-preview-text">{{ previewBody || '该楼层暂无可预览正文' }}</p>
         </div>
       </article>
     </div>
@@ -164,17 +174,16 @@ onUnmounted(() => unbind.forEach(off => off()));
 .bbs-favorites-filter-hint { flex-basis: 100%; color: var(--bbs-ink-muted); font-size: 12px; }
 .bbs-favorites-list { display: grid; gap: 12px; }
 .bbs-favorite-card { min-width: 0; }
-.bbs-favorite-head { display: flex; align-items: center; gap: 10px; }
-.bbs-favorite-title { min-width: 0; margin: 0; font-size: 15px; font-weight: 600; color: var(--bbs-ink); overflow-wrap: anywhere; }
-.bbs-favorite-force { margin-left: auto; }
+.bbs-favorite-head { display: flex; align-items: flex-start; gap: 10px; }
+.bbs-favorite-head > .bbs-summary-loc { flex: none; }
+.bbs-favorite-title { flex: 1; min-width: 0; margin: 0; font-size: 15px; font-weight: 600; color: var(--bbs-ink); overflow-wrap: anywhere; }
+.bbs-favorite-nav { display: inline-flex; flex: none; align-items: center; gap: 2px; margin-left: auto; }
 .bbs-favorite-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .bbs-favorite-tag { padding: 3px 7px; border-radius: var(--bbs-radius-sm); background: var(--bbs-surface-2); color: var(--bbs-ink-soft); font-size: 11px; overflow-wrap: anywhere; }
 .bbs-favorite-excerpt { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; margin: 10px 0; color: var(--bbs-ink-soft); font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
 .bbs-favorite-excerpt.is-muted { color: var(--bbs-ink-muted); }
 .bbs-favorite-actions { display: flex; flex-wrap: wrap; gap: 4px; }
 .bbs-favorite-actions .bbs-btn { gap: 4px; padding: 6px 8px; }
-.bbs-favorite-preview { margin-top: 12px; padding: 12px; border: 1px solid var(--bbs-line); border-radius: var(--bbs-radius-sm); background: var(--bbs-surface-2); }
-.bbs-favorite-preview-text { margin: 0; max-height: 50vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--bbs-ink); font-size: 13px; line-height: 1.8; }
 
 @media (max-width: 640px) {
   .bbs-favorite-actions { flex-wrap: nowrap; }
