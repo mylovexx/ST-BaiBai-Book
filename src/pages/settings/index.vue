@@ -1211,22 +1211,22 @@ function exportPublicApiDocument() {
           <input v-model="apiSettings.vector.enabled" type="checkbox" class="bbs-checkbox" />
         </label>
         <div class="bbs-field">
-          <div class="bbs-field-head">
+          <div class="bbs-field-head bbs-vec-mode-row">
             <span class="bbs-field-label">传统向量</span>
-          </div>
-          <div class="bbs-segmented" role="group" aria-label="传统向量">
-            <button
-              v-for="option in TRADITIONAL_VECTOR_OPTIONS"
-              :key="option.value"
-              type="button"
-              class="bbs-seg"
-              :class="{ 'is-on': apiSettings.vector.traditionalMode === option.value }"
-              :aria-pressed="apiSettings.vector.traditionalMode === option.value"
-              :disabled="!apiSettings.vector.enabled"
-              @click="apiSettings.vector.traditionalMode = option.value"
-            >
-              {{ option.label }}
-            </button>
+            <div class="bbs-segmented bbs-vec-mode" role="group" aria-label="传统向量">
+              <button
+                v-for="option in TRADITIONAL_VECTOR_OPTIONS"
+                :key="option.value"
+                type="button"
+                class="bbs-seg"
+                :class="{ 'is-on': apiSettings.vector.traditionalMode === option.value }"
+                :aria-pressed="apiSettings.vector.traditionalMode === option.value"
+                :disabled="!apiSettings.vector.enabled"
+                @click="apiSettings.vector.traditionalMode = option.value"
+              >
+                {{ option.label }}
+              </button>
+            </div>
           </div>
           <p class="bbs-field-hint">{{ traditionalVectorHint }}</p>
         </div>
@@ -2207,6 +2207,26 @@ function exportPublicApiDocument() {
   background: var(--bbs-surface);
   color: var(--bbs-accent);
   box-shadow: 0 1px 3px oklch(0 0 0 / 0.08);
+}
+.bbs-vec-mode-row {
+  align-items: center;
+  margin-bottom: 8px;
+}
+.bbs-vec-mode-row .bbs-field-label {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.bbs-segmented.bbs-vec-mode {
+  flex-shrink: 0;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--bbs-radius-sm);
+}
+.bbs-vec-mode .bbs-seg {
+  padding: 4px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
 }
 .bbs-field-hint.bbs-vec-fallback {
   color: var(--bbs-warning);
