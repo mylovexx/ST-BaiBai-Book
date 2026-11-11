@@ -2,26 +2,26 @@
  * 阻塞式向量召回:生成主回复前,按重写查询或本轮用户输入检索相关旧记忆,注入主对话。
  *
  * 管线(全程阻塞,对齐既定方案,不做预取/异步):
- *  1. 默认重写为 INTENT + 多条检索 Q;传统模式直接采用本轮用户输入,跳过重写。
- *     重写失败则结束本轮召回;传统模式无有效用户输入也跳过。
+ *  1. 默认重写为 INTENT + 多条检索 Q;强制传统直接采用本轮用户输入,跳过重写。
+ *     保底模式在重写失败后使用用户原文并提示;无有效保底输入则跳过。
  *  2. 各 query 各自 embed → vec/search(scopes = 当前 chat + 各 bundle,后端多路 max 融合),
  *     纯按 embedding 得分取前 rerankCandidates 条(不套阈值)。
  *  3. rerank 候选(用 INTENT 或用户输入作 query;渠道未配则降级:跳过 rerank,用 embedding 序)。
  *  4. 分档:全文档(rerank≥阈值,取前 fullTextCount,发原文 mes_full)/ 摘要档(embedding≥阈值,发 document)。
  *  5. 按 leaf_id 去重 + 排除当前窗口内已全文的叶子 → 拼注入文本 → setExtensionPrompt。
  *
- * 失败/未配置全程静默降级(清空注入槽),向量是增强项,绝不阻断生成。
+ * 向量是增强项,失败不阻断生成;启用保底时提示重写失败原因。
  */
 
 import { getContext, type STMessage } from '@/st/context';
 import { toast } from '@/st/toast';
-import { apiSettings, engineActiveHere } from '@/api/settings';
+import { apiSettings, engineActiveHere, type TraditionalVectorMode } from '@/api/settings';
 import type { VecHit } from '@/api/baibaoku';
 import { vecSearch } from './store';
 import { getLeaf, leafValid } from '../apply';
 import { MEMORY_BRIEFING_NOTE, MEMORY_BRIEFING_END } from '../prompts';
 import { embedTexts, encodeFloat32Base64, rerankDocuments } from './embed';
-import { rewriteQuery } from './rewrite';
+import { rewriteQuery, type RewriteResult } from './rewrite';
 import { ensureRecallIndex } from './index';
 import { currentBundleHashes, currentChatId, currentChatScope, currentVectorDb, recallScopes } from './scope';
 import { isAiFloor, resolveKeepStart } from '../engine';
@@ -118,10 +118,10 @@ function fnv1a(text: string): string {
  * 召回结果缓存:重新生成 / 翻页(swipe)时召回输入一字不变,直接复用上次结果,
  * 省掉重写+embed+search+rerank 的额度与时间。只存「最近一次」一条,key 不匹配即覆盖。
  *
- * key = chatId | 最新user楼层号 | hash(最新user文本) | hash(上一条AI文本) | 查询模式 | 召回参数指纹
+ * key = chatId | 最新user楼层号 | hash(最新user文本) | hash(上一条AI文本) | 传统向量策略 | 召回参数指纹
  *  - 带 user 文本 hash:编辑最新输入后重生成,楼层号没变但内容变了,靠它失效(否则错误复用)。
  *  - 带 AI 文本 hash:编辑上一条 AI 楼后重生成,靠它失效。
- *  - 带查询模式和召回参数指纹:模式、阈值、条数等任一改动则失效;只改渠道不失效。
+ *  - 带三种策略和召回参数指纹:模式、阈值、条数等任一改动则失效;只改渠道不失效。
  *  - 带 chatId:换聊天后楼层号/哈希偶然相同也不跨聊天误命中。
  */
 interface RecallCache {
@@ -191,7 +191,7 @@ function latestUserInput(chat: STMessage[]): RecallUserInput | null {
 function buildRecallCacheKey(
   chat: STMessage[],
   cfg: typeof apiSettings.vector.recall,
-  queryMode: RecallQueryMode,
+  traditionalMode: TraditionalVectorMode,
   userInput: RecallUserInput | null,
   forcedFingerprint = '',
 ): string | null {
@@ -207,7 +207,7 @@ function buildRecallCacheKey(
     }
   }
 
-  return `${chatId}|${userIdx}|${fnv1a(userText)}|${fnv1a(aiText)}|${queryMode}|${recallParamFingerprint(cfg)}|${forcedFingerprint}`;
+  return `${chatId}|${userIdx}|${fnv1a(userText)}|${fnv1a(aiText)}|${traditionalMode}|${recallParamFingerprint(cfg)}|${forcedFingerprint}`;
 }
 
 let recalling = false;
@@ -246,7 +246,8 @@ export async function runVectorRecall(signal?: AbortSignal): Promise<void> {
   if (!ctx || typeof fn !== 'function') return;
 
   // 模式和输入在 await 前固定,避免索引等待期间的设置/正文变化污染缓存。
-  const queryMode: RecallQueryMode = apiSettings.vector.traditionalMode === true ? 'traditional' : 'rewrite';
+  const traditionalMode = apiSettings.vector.traditionalMode;
+  const queryMode: RecallQueryMode = traditionalMode === 'force' ? 'traditional' : 'rewrite';
   const userInput = latestUserInput(chat);
   const userQuery = userInput?.text.trim() || '';
   const cfg = { ...apiSettings.vector.recall };
@@ -308,7 +309,7 @@ export async function runVectorRecall(signal?: AbortSignal): Promise<void> {
       return;
     }
     const scopes = recallScopes();
-    const cacheKey = buildRecallCacheKey(chat, cfg, queryMode, userInput, fnv1a(fingerprint));
+    const cacheKey = buildRecallCacheKey(chat, cfg, traditionalMode, userInput, fnv1a(fingerprint));
     const cached = cacheKey ? loadRecallCache() : null;
     if (cacheKey && cached && cached.key === cacheKey) {
       fn(RECALL_INJECT_KEY, cached.text, IN_CHAT, recallInjectionDepth(), false, ROLE_SYSTEM, null);
@@ -320,9 +321,27 @@ export async function runVectorRecall(signal?: AbortSignal): Promise<void> {
     // 召回前先补齐窗口外缺失的向量索引(载入老聊天/向量后开 → 旧叶子可能从未索引),
     // 否则这些旧剧情会直接漏召回。只阻塞窗口外,窗口内交给防抖增量。
     await ensureRecallIndex(signal);
+    if (!current() || !forcedRecallRoundCurrent(round, ctx)) { finish('未注入:聊天或轮次已变化'); return; }
 
-    // 1) 按固定模式生成查询;重写失败不切换模式,交给外层 catch 结束本轮召回。
-    const { queryVectors, rerankQuery } = await resolveQueryVectors(queryMode, userQuery, signal);
+    // 查询文本与向量化分开,只让重写阶段的失败触发保底。
+    const query = await resolveRecallQueries(traditionalMode, userQuery, signal);
+    if (!current() || !forcedRecallRoundCurrent(round, ctx)) { finish('未注入:聊天或轮次已变化'); return; }
+    const { intent, queries, fallbackReason } = query;
+    setRecallQueries(intent, queries, query.queryMode, fallbackReason);
+    if (fallbackReason) {
+      if (!queries.length) {
+        const reason = userInput ? '本轮用户输入为空' : '无用户输入';
+        toast(`Query 重写失败，${reason}，无法使用传统向量保底：${fallbackReason}`, 'warning');
+        finish(`未召回:${reason},无法使用传统向量保底`);
+        return;
+      }
+      setRecallStatus('进行中…(传统向量保底)');
+      toast(`Query 重写失败，改用传统向量保底：${fallbackReason}`, 'warning');
+    }
+    // INTENT 留给重排,检索只向量化 Q,避免场景描述稀释相似度。
+    const vecs = await embedTexts(queries, signal);
+    const queryVectors = vecs.map(v => encodeFloat32Base64(v));
+    const rerankQuery = intent || queries[0];
     if (!queryVectors.length) {
       finish('未召回:未生成查询向量');
       return;
@@ -360,9 +379,10 @@ export async function runVectorRecall(signal?: AbortSignal): Promise<void> {
     const now = latestStoryTime(chat);
     const { text, tiers, chunks } = buildRecallText(ranked, cfg, selfScope, now);
     recordRerankDebug(ranked, tiers, selfScope);
-    const result = finish(text ? '召回完成' : '召回完成:无内容达标,本回合未注入', chunks);
-    // 实算成功才落缓存(失败/降级路径不缓存,下次重试)。存调试快照供命中时还原面板。
-    if (cacheKey && result?.stable) saveRecallCache({ key: cacheKey, text: result.text, debug: snapshotRecallDebug() });
+    const status = text ? '召回完成' : '召回完成:无内容达标,本回合未注入';
+    const result = finish(fallbackReason ? `${status}(传统向量保底)` : status, chunks);
+    // 保底结果不缓存,同轮重生成时仍尝试重写;正常结果留存调试快照供还原。
+    if (cacheKey && result?.stable && !fallbackReason) saveRecallCache({ key: cacheKey, text: result.text, debug: snapshotRecallDebug() });
   } catch (e) {
     console.warn('[柏宝书向量] 召回失败:', e);
     const message = e instanceof Error ? e.message : String(e);
@@ -404,24 +424,33 @@ function recordRerankDebug(
   setRecallRerank(hits);
 }
 
-/**
- * 两种模式共用向量化和重排:传统模式保留完整用户输入,不套重写的清洗/限长。
- * 重写模式保留 INTENT + 多条 Q;失败抛错,由 runVectorRecall 结束本次召回。
- */
-async function resolveQueryVectors(
-  queryMode: RecallQueryMode,
+interface RecallQueries extends RewriteResult {
+  queryMode: RecallQueryMode;
+  fallbackReason: string;
+}
+
+/** 传统查询保留完整用户原文;重写失败先返回保底文本,由调用方确认轮次有效后再提示和向量化。 */
+async function resolveRecallQueries(
+  traditionalMode: TraditionalVectorMode,
   userQuery: string,
   signal?: AbortSignal,
-): Promise<{ queryVectors: string[]; rerankQuery: string }> {
-  const { intent, queries } = queryMode === 'traditional'
-    ? { intent: '', queries: [userQuery] }
-    : await rewriteQuery(signal);
-  setRecallQueries(intent, queries);
-  if (!queries.length) throw new Error('查询重写未产出任何 query');
-  // 检索向量:多条 Q(INTENT 偏长偏全文,留给 rerank,不进检索向量以免稀释)
-  const vecs = await embedTexts(queries, signal);
-  const queryVectors = vecs.map(v => encodeFloat32Base64(v));
-  return { queryVectors, rerankQuery: intent || queries[0] };
+): Promise<RecallQueries> {
+  if (traditionalMode === 'force') {
+    return { intent: '', queries: [userQuery], queryMode: 'traditional', fallbackReason: '' };
+  }
+  try {
+    const result = await rewriteQuery(signal);
+    if (!result.queries.length) throw new Error('查询重写未产出任何 query');
+    return { ...result, queryMode: 'rewrite', fallbackReason: '' };
+  } catch (e) {
+    if (traditionalMode !== 'fallback' || signal?.aborted) throw e;
+    return {
+      intent: '',
+      queries: userQuery ? [userQuery] : [],
+      queryMode: userQuery ? 'traditional' : 'rewrite',
+      fallbackReason: (e instanceof Error ? e.message : String(e)) || '未知错误',
+    };
+  }
 }
 
 interface RankedHit extends VecHit {

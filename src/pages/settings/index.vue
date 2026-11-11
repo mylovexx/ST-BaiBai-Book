@@ -5,7 +5,7 @@ import BbsSelect from '@/components/BbsSelect.vue';
 import Icon from '@/components/Icon.vue';
 import ModalMask from '@/components/ModalMask.vue';
 import { fetchModels, testChannel } from '@/api/client';
-import { apiSettings, newChannel, resolveVectorModel, sanitizeTagName, type ApiChannel, type Verbosity } from '@/api/settings';
+import { apiSettings, newChannel, resolveVectorModel, sanitizeTagName, type ApiChannel, type TraditionalVectorMode, type Verbosity } from '@/api/settings';
 import { getContext } from '@/st/context';
 import {
   JAILBREAK_PROMPT,
@@ -332,8 +332,16 @@ const VECTOR_ROLES: VectorRoleMeta[] = [
   { key: 'rerank', label: 'Rerank(重排)' },
   { key: 'queryRewrite', label: 'Query 重写' },
 ];
+const TRADITIONAL_VECTOR_OPTIONS: { value: TraditionalVectorMode; label: string; hint: string }[] = [
+  { value: 'force', label: '强制', hint: '直接用本轮用户输入检索,跳过 Query 重写;仍保留重排与全文 / 摘要分档。' },
+  { value: 'fallback', label: '保底', hint: '优先 Query 重写;未配置或重写失败时,改用本轮用户输入检索并提示原因。' },
+  { value: 'off', label: '关闭', hint: '仅使用 Query 重写查询;未配置或重写失败时,本回合不进行向量召回。' },
+];
+const traditionalVectorHint = computed(() => TRADITIONAL_VECTOR_OPTIONS.find(
+  option => option.value === apiSettings.vector.traditionalMode,
+)?.hint);
 const visibleVectorRoles = computed(() => VECTOR_ROLES.filter(
-  role => role.key !== 'queryRewrite' || !apiSettings.vector.traditionalMode,
+  role => role.key !== 'queryRewrite' || apiSettings.vector.traditionalMode !== 'force',
 ));
 
 /* —— 向量端点:每角色直接填 地址/密钥/模型;模型可一键拉取(combobox)。 —— */
@@ -668,12 +676,15 @@ function qLabel(queryIndex: number): string {
   return queryIndex >= 0 ? `Q${queryIndex + 1}` : '—';
 }
 const TIER_LABEL: Record<'full' | 'brief' | 'drop', string> = { full: '全文', brief: '摘要', drop: '丢弃' };
+const recallQueryLabel = computed(() => recallDebug.queryMode === 'traditional'
+  ? (recallDebug.fallbackReason ? '传统向量保底' : '传统向量')
+  : '查询重写');
 // 状态语气:决定横幅左侧圆点的配色(成功/警示/失败/进行中)
 const recallStatusKind = computed<'ok' | 'warn' | 'fail' | 'pending'>(() => {
   const s = recallDebug.status;
   if (s.includes('失败')) return 'fail';
   if (s.includes('进行中')) return 'pending';
-  if (s.includes('未召回') || s.includes('未注入')) return 'warn';
+  if (recallDebug.fallbackReason || s.includes('未召回') || s.includes('未注入')) return 'warn';
   return 'ok';
 });
 // 分数(0~1)→ 进度条宽度百分比;负分(如未知)按 0 处理
@@ -1199,16 +1210,26 @@ function exportPublicApiDocument() {
           <span class="bbs-field-label">启用向量记忆</span>
           <input v-model="apiSettings.vector.enabled" type="checkbox" class="bbs-checkbox" />
         </label>
-        <label class="bbs-switch-row">
-          <span class="bbs-field-label">传统向量</span>
-          <input
-            v-model="apiSettings.vector.traditionalMode"
-            type="checkbox"
-            class="bbs-checkbox"
-            :disabled="!apiSettings.vector.enabled"
-          />
-        </label>
-        <p class="bbs-field-hint">开启后直接用本轮用户输入检索,跳过 Query 重写;仍保留重排与全文 / 摘要分档。</p>
+        <div class="bbs-field">
+          <div class="bbs-field-head">
+            <span class="bbs-field-label">传统向量</span>
+          </div>
+          <div class="bbs-segmented" role="group" aria-label="传统向量">
+            <button
+              v-for="option in TRADITIONAL_VECTOR_OPTIONS"
+              :key="option.value"
+              type="button"
+              class="bbs-seg"
+              :class="{ 'is-on': apiSettings.vector.traditionalMode === option.value }"
+              :aria-pressed="apiSettings.vector.traditionalMode === option.value"
+              :disabled="!apiSettings.vector.enabled"
+              @click="apiSettings.vector.traditionalMode = option.value"
+            >
+              {{ option.label }}
+            </button>
+          </div>
+          <p class="bbs-field-hint">{{ traditionalVectorHint }}</p>
+        </div>
 
         <hr class="bbs-rule bbs-vec-enable-rule" />
 
@@ -1363,9 +1384,10 @@ function exportPublicApiDocument() {
               得分高的发原文全文,稍低但仍过 embedding 阈值的发摘要;两档合计不超过「最终召回条数」。
             </p>
 
-            <p class="bbs-field-hint">
+            <p v-if="apiSettings.vector.traditionalMode !== 'force'" class="bbs-field-hint">
               生成前用小模型(上方「Query 重写」)把当前剧情重写成多条检索 query,多路召回更全面。
-              <strong>查询重写为召回必经步骤,须配好「Query 重写」模型;未配或重写失败则本回合不召回。</strong>
+              <strong v-if="apiSettings.vector.traditionalMode === 'fallback'">重写未配置或失败时,使用本轮用户输入保底并提示原因;没有有效用户输入则无法保底。</strong>
+              <strong v-else>须配好「Query 重写」模型;未配或重写失败则本回合不召回。</strong>
               每回合多一次小模型请求(略增延迟)。
             </p>
 
@@ -1520,9 +1542,12 @@ function exportPublicApiDocument() {
               <span class="bbs-dbg-status-text">{{ recallDebug.status }}</span>
               <span class="bbs-dbg-time">{{ fmtRecallTime(recallDebug.at) }}</span>
             </div>
+            <p v-if="recallDebug.fallbackReason" class="bbs-field-hint bbs-vec-fallback">
+              Query 重写失败:{{ recallDebug.fallbackReason }}
+            </p>
 
             <!-- 四阶段各自可折叠,默认收起;标题带计数 -->
-            <Collapsible :title="`1 · ${recallDebug.queryMode === 'traditional' ? '传统向量' : '查询重写'} · ${recallDebug.queries.length} Q`" :open="false">
+            <Collapsible :title="`1 · ${recallQueryLabel} · ${recallDebug.queries.length} Q`" :open="false">
               <p v-if="recallDebug.queryMode === 'traditional'" class="bbs-field-hint">查询来源:本轮用户输入。</p>
               <p v-if="recallDebug.intent" class="bbs-dbg-intent">
                 <span class="bbs-dbg-tag">INTENT</span><span class="bbs-dbg-intent-text">{{ recallDebug.intent }}</span>
@@ -2171,13 +2196,20 @@ function exportPublicApiDocument() {
     background var(--bbs-dur) var(--bbs-ease),
     color var(--bbs-dur) var(--bbs-ease);
 }
-.bbs-seg:hover {
+.bbs-seg:hover:not(:disabled) {
   color: var(--bbs-ink);
+}
+.bbs-seg:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 .bbs-seg.is-on {
   background: var(--bbs-surface);
   color: var(--bbs-accent);
   box-shadow: 0 1px 3px oklch(0 0 0 / 0.08);
+}
+.bbs-field-hint.bbs-vec-fallback {
+  color: var(--bbs-warning);
 }
 
 /* 任务指派 */

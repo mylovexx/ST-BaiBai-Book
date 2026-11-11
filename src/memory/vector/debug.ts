@@ -42,6 +42,8 @@ export interface RecallDebug {
   status: string;
   /** 记录实际查询模式,避免切换设置后误标上次召回。 */
   queryMode: RecallQueryMode;
+  /** 保底模式下的重写失败原因,避免召回完成后丢失降级信息。 */
+  fallbackReason: string;
   /** 查询重写的场景意图(兼作 rerank query) */
   intent: string;
   /** 实际检索 query;传统模式仅一条用户输入。 */
@@ -63,7 +65,7 @@ export interface RecallDebugForcedHit {
 }
 
 function empty(): RecallDebug {
-  return { at: 0, status: '', queryMode: 'rewrite', intent: '', queries: [], embedding: [], rerank: [], forced: [], injectedText: '' };
+  return { at: 0, status: '', queryMode: 'rewrite', fallbackReason: '', intent: '', queries: [], embedding: [], rerank: [], forced: [], injectedText: '' };
 }
 
 /** 全局召回调试快照。UI 直接订阅;recall.ts 在各阶段写入。 */
@@ -86,7 +88,9 @@ export function setRecallStatus(status: string): void {
   if (!recallDebug.at) recallDebug.at = Date.now();
 }
 
-export function setRecallQueries(intent: string, queries: string[]): void {
+export function setRecallQueries(intent: string, queries: string[], queryMode: RecallQueryMode, fallbackReason = ''): void {
+  recallDebug.queryMode = queryMode;
+  recallDebug.fallbackReason = fallbackReason;
   recallDebug.intent = intent;
   recallDebug.queries = [...queries];
 }

@@ -27,9 +27,11 @@ function useSettings(vector: Record<string, unknown>) {
 
 describe('traditional vector settings', () => {
   it.each([
-    ['missing field', undefined, false], ['null', null, false], ['string', 'true', false],
-    ['number', 1, false], ['enabled', true, true], ['disabled', false, false],
-  ])('hydrates the option with a boolean default (%s)', async (_label, raw, expected) => {
+    ['missing field', undefined, 'off'], ['null', null, 'off'], ['string', 'true', 'off'],
+    ['number', 1, 'off'], ['invalid mode', 'rewrite', 'off'], ['object', {}, 'off'],
+    ['legacy enabled', true, 'force'], ['legacy disabled', false, 'off'],
+    ['forced', 'force', 'force'], ['fallback', 'fallback', 'fallback'], ['off', 'off', 'off'],
+  ])('hydrates the mode while migrating legacy booleans (%s)', async (_label, raw, expected) => {
     useSettings(raw === undefined ? {} : { traditionalMode: raw });
     const { apiSettings, hydrateSettings } = await import('./settings');
     hydrateSettings();
@@ -41,35 +43,35 @@ describe('traditional vector settings', () => {
     const ctx = useSettings({ traditionalMode: true });
     const stored = ctx.extensionSettings.baibai_book;
     const { apiSettings, hydrateSettings } = await import('./settings');
-    expect(apiSettings.vector.traditionalMode).toBe(false);
+    expect(apiSettings.vector.traditionalMode).toBe('off');
     apiSettings.vector.embedding.model = 'A local default before ST is ready';
     await nextTick();
     expect(ctx.extensionSettings.baibai_book).toBe(stored);
     expect(ctx.saveSettingsDebounced).not.toHaveBeenCalled();
 
     hydrateSettings();
-    expect(apiSettings.vector.traditionalMode).toBe(true);
+    expect(apiSettings.vector.traditionalMode).toBe('force');
     await nextTick();
-    expect((ctx.extensionSettings.baibai_book as unknown as ApiSettings).vector.traditionalMode).toBe(true);
+    expect((ctx.extensionSettings.baibai_book as unknown as ApiSettings).vector.traditionalMode).toBe('force');
   });
 
-  it('persists the option across reloads while retaining the rewrite configuration', async () => {
-    const ctx = useSettings({ traditionalMode: false, queryRewrite: { model: 'saved-rewrite-model', url: 'https://rewrite.example/v1' } });
+  it.each(['force', 'fallback', 'off'] as const)('persists %s across reloads while retaining the rewrite configuration', async mode => {
+    const ctx = useSettings({ traditionalMode: mode === 'off', queryRewrite: { model: 'saved-rewrite-model', url: 'https://rewrite.example/v1' } });
     const { apiSettings, hydrateSettings } = await import('./settings');
     hydrateSettings();
     await nextTick();
     ctx.saveSettingsDebounced.mockClear();
-    apiSettings.vector.traditionalMode = true;
+    apiSettings.vector.traditionalMode = mode;
     await nextTick();
     expect(ctx.saveSettingsDebounced).toHaveBeenCalledOnce();
     expect((ctx.extensionSettings.baibai_book as unknown as ApiSettings).vector).toMatchObject({
-      traditionalMode: true, queryRewrite: { model: 'saved-rewrite-model', url: 'https://rewrite.example/v1' },
+      traditionalMode: mode, queryRewrite: { model: 'saved-rewrite-model', url: 'https://rewrite.example/v1' },
     });
 
     vi.resetModules();
     const reloaded = await import('./settings');
     reloaded.hydrateSettings();
-    expect(reloaded.apiSettings.vector.traditionalMode).toBe(true);
+    expect(reloaded.apiSettings.vector.traditionalMode).toBe(mode);
     expect(reloaded.apiSettings.vector.queryRewrite.model).toBe('saved-rewrite-model');
     await nextTick();
   });

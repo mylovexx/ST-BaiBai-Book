@@ -109,12 +109,14 @@ export interface VectorRecallSettings {
   minAiFloors: number;
 }
 
+export type TraditionalVectorMode = 'force' | 'fallback' | 'off';
+
 /** 向量记忆设置。embedding 为基准,rerank/queryRewrite 的 url 留空则整体复用 embedding。 */
 export interface VectorSettings {
   /** 向量记忆开关 */
   enabled: boolean;
-  /** 传统向量直接用本轮用户输入查询,省去模型重写。默认关。 */
-  traditionalMode: boolean;
+  /** 强制跳过重写;保底仅在重写失败时用用户原文;关闭时只用重写查询。默认关闭。 */
+  traditionalMode: TraditionalVectorMode;
   /** 文本向量化端点(基准,必填) */
   embedding: VectorEndpoint;
   /** 重排端点;url 留空复用 embedding */
@@ -327,7 +329,7 @@ function defaults(): ApiSettings {
     verbosity: 'detailed',
     vector: {
       enabled: false,
-      traditionalMode: false,
+      traditionalMode: 'off',
       // 默认填硅基流动地址 + 各角色模型,用户只需在 embedding 填一次 key 即可跑通:
       // rerank/queryRewrite 的 url/key 留空会回落复用 embedding 的(见 resolveVectorModel)。
       embedding: { url: 'https://api.siliconflow.cn/v1', key: '', model: 'Qwen/Qwen3-Embedding-8B', timeoutSec: 10, retries: 1 },
@@ -436,7 +438,7 @@ function normalize(raw: unknown): ApiSettings {
   merged.vector = {
     ...d.vector,
     ...rv,
-    traditionalMode: typeof rv.traditionalMode === 'boolean' ? rv.traditionalMode : d.vector.traditionalMode,
+    traditionalMode: normalizeTraditionalVectorMode(rv.traditionalMode),
     embedding: normalizeVectorEndpoint(rv.embedding, d.vector.embedding),
     rerank: normalizeVectorEndpoint(rv.rerank, d.vector.rerank),
     queryRewrite: normalizeVectorEndpoint(rv.queryRewrite, d.vector.queryRewrite),
@@ -525,6 +527,13 @@ export function sanitizeTagName(raw: string): string {
     .replace(/>$/, '') // 结尾的 >
     .trim()
     .replace(/[<>/\\\s.*+?^${}()|[\]]/g, ''); // 剔除尖括号/斜杠/空白/正则元字符,中文等保留
+}
+
+function normalizeTraditionalVectorMode(value: unknown): TraditionalVectorMode {
+  // 旧开关开启时仍强制使用原文,升级不改变原有召回行为。
+  if (value === true) return 'force';
+  if (value === 'force' || value === 'fallback' || value === 'off') return value;
+  return 'off';
 }
 
 /** 补全单个向量端点的字段并校验类型(缺失/类型不符回退空串)。 */

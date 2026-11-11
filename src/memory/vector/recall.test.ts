@@ -32,7 +32,7 @@ let ctx: STContext;
 
 beforeEach(() => {
   settings.apiSettings.vector = JSON.parse(JSON.stringify(originalVector));
-  Object.assign(settings.apiSettings.vector, { enabled: true, traditionalMode: true });
+  Object.assign(settings.apiSettings.vector, { enabled: true, traditionalMode: 'force' });
   Object.assign(settings.apiSettings.vector.recall, { minAiFloors: 0, rerankCandidates: 20,
     embeddingThreshold: 0.8, rerankThreshold: 0.9, fullTextCount: 1, finalRecallCount: 2 });
   const cache = new Map<string, string>();
@@ -77,7 +77,7 @@ describe('手动强制注入与向量合并', () => {
       if (scenario === 'empty input') chat[1].mes = '  ';
       if (scenario === 'no hits') vi.mocked(store.vecSearch).mockResolvedValue({ results: [] });
       if (scenario === 'rewrite failure') {
-        settings.apiSettings.vector.traditionalMode = false;
+        settings.apiSettings.vector.traditionalMode = 'off';
         vi.mocked(rewrite.rewriteQuery).mockRejectedValue(new Error('重写失败'));
       }
       if (scenario === 'embedding failure') vi.mocked(embed.embedTexts).mockRejectedValue(new Error('向量化失败'));
@@ -301,24 +301,23 @@ describe('traditional vector recall', () => {
     expect(recallDebug).toMatchObject({ ...debug, status: '召回完成(复用缓存)' });
   });
 
-  it('recomputes when switching modes in either direction', async () => {
-    settings.apiSettings.vector.traditionalMode = false;
+  it.each([
+    ['off', 'force'], ['force', 'off'], ['off', 'fallback'],
+    ['fallback', 'off'], ['force', 'fallback'], ['fallback', 'force'],
+  ] as const)('recomputes when switching from %s to %s', async (from, to) => {
+    settings.apiSettings.vector.traditionalMode = from;
     await runVectorRecall();
-    const rewriteKey = JSON.parse(localStorage.getItem(RECALL_CACHE_STORAGE_KEY)!).key;
-    expect(embed.embedTexts).toHaveBeenLastCalledWith(['曾经的约定', '她与主角的往事'], undefined);
-    expect(embed.rerankDocuments).toHaveBeenLastCalledWith('回忆当年的约定。', expect.any(Array), 2, undefined);
-
-    settings.apiSettings.vector.traditionalMode = true;
+    const previousKey = JSON.parse(localStorage.getItem(RECALL_CACHE_STORAGE_KEY)!).key;
+    settings.apiSettings.vector.traditionalMode = to;
     await runVectorRecall();
-    expect(JSON.parse(localStorage.getItem(RECALL_CACHE_STORAGE_KEY)!).key).not.toBe(rewriteKey);
-    expect(embed.embedTexts).toHaveBeenLastCalledWith([chat[1].mes], undefined);
-    expect(recallDebug).toMatchObject({ queryMode: 'traditional', intent: '', queries: [chat[1].mes] });
-
-    settings.apiSettings.vector.traditionalMode = false;
-    await runVectorRecall();
-    expect(rewrite.rewriteQuery).toHaveBeenCalledTimes(2);
-    expect(embed.embedTexts).toHaveBeenCalledTimes(3);
-    expect(recallDebug).toMatchObject({ queryMode: 'rewrite', intent: '回忆当年的约定。', queries: ['曾经的约定', '她与主角的往事'] });
+    expect(JSON.parse(localStorage.getItem(RECALL_CACHE_STORAGE_KEY)!).key).not.toBe(previousKey);
+    expect(embed.embedTexts).toHaveBeenCalledTimes(2);
+    expect(embed.embedTexts).toHaveBeenLastCalledWith(
+      to === 'force' ? [chat[1].mes] : ['曾经的约定', '她与主角的往事'], undefined);
+    expect(embed.rerankDocuments).toHaveBeenLastCalledWith(
+      to === 'force' ? chat[1].mes : '回忆当年的约定。', expect.any(Array), 2, undefined);
+    expect(rewrite.rewriteQuery).toHaveBeenCalledTimes(Number(from !== 'force') + Number(to !== 'force'));
+    expect(recallDebug).toMatchObject({ queryMode: to === 'force' ? 'traditional' : 'rewrite', fallbackReason: '' });
   });
 
   it('invalidates the cache after editing the latest input or recall thresholds', async () => {
@@ -338,7 +337,7 @@ describe('traditional vector recall', () => {
     const originalInput = chat[1].mes;
     const pending = runVectorRecall();
     await vi.waitFor(() => expect(index.ensureRecallIndex).toHaveBeenCalledOnce());
-    settings.apiSettings.vector.traditionalMode = false;
+    settings.apiSettings.vector.traditionalMode = 'off';
     chat[1].mes = '索引等待期间编辑的输入。';
     finishIndex();
     await pending;
@@ -367,7 +366,7 @@ describe('traditional vector recall', () => {
   });
 
   it('ends rewrite recall on failure without silently switching modes or caching the failure', async () => {
-    settings.apiSettings.vector.traditionalMode = false;
+    settings.apiSettings.vector.traditionalMode = 'off';
     vi.mocked(rewrite.rewriteQuery).mockRejectedValue(new Error('Query 重写未配置'));
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     await runVectorRecall();
@@ -377,5 +376,159 @@ describe('traditional vector recall', () => {
     expect(localStorage.getItem(RECALL_CACHE_STORAGE_KEY)).toBeNull();
     expect(inject.mock.calls.at(-1)?.[1]).toBe('');
     expect(recallDebug).toMatchObject({ queryMode: 'rewrite', status: '失败:Query 重写未配置' });
+  });
+});
+
+describe('传统向量保底', () => {
+  beforeEach(() => {
+    settings.apiSettings.vector.traditionalMode = 'fallback';
+    vi.spyOn(notices, 'toast').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  it('重写成功时保留多路查询并复用正常缓存', async () => {
+    await runVectorRecall();
+    await runVectorRecall();
+    expect(rewrite.rewriteQuery).toHaveBeenCalledOnce();
+    expect(embed.embedTexts).toHaveBeenCalledExactlyOnceWith(['曾经的约定', '她与主角的往事'], undefined);
+    expect(embed.rerankDocuments).toHaveBeenCalledExactlyOnceWith('回忆当年的约定。', hits.map(h => h.mesFull), 2, undefined);
+    expect(notices.toast).not.toHaveBeenCalled();
+    expect(recallDebug).toMatchObject({ queryMode: 'rewrite', fallbackReason: '', status: '召回完成(复用缓存)' });
+  });
+
+  it.each([
+    'Query 重写模型未配置', 'Query 重写超时(>90s)', 'Query 重写 API 500',
+    'Query 重写网络异常', 'Query 重写返回空内容', 'Query 重写未解析出任何检索 query',
+  ])('重写失败后使用完整用户原文保底并保留原因:%s', async reason => {
+    const raw = `  <scene>她回到故地。</scene>\n${'详细描述当年的约定。'.repeat(40)}\n现在又见到了那个人。  `;
+    chat[1].mes = raw;
+    vi.mocked(rewrite.rewriteQuery).mockRejectedValue(new Error(reason));
+    const signal = new AbortController().signal;
+    await runVectorRecall(signal);
+    expect(rewrite.rewriteQuery).toHaveBeenCalledExactlyOnceWith(signal);
+    expect(embed.embedTexts).toHaveBeenCalledExactlyOnceWith([raw.trim()], signal);
+    expect(embed.rerankDocuments).toHaveBeenCalledExactlyOnceWith(raw.trim(), hits.map(h => h.mesFull), 2, signal);
+    expect(notices.toast).toHaveBeenCalledExactlyOnceWith(`Query 重写失败，改用传统向量保底：${reason}`, 'warning');
+    expect(recallDebug).toMatchObject({ queryMode: 'traditional', fallbackReason: reason, intent: '',
+      queries: [raw.trim()], status: '召回完成(传统向量保底)' });
+    expect(recallDebug.rerank.map(h => h.tier)).toEqual(['full', 'brief']);
+    expect(recallDebug.injectedText).toContain(hits[0].mesFull);
+    expect(recallDebug.injectedText).toContain(hits[1].document);
+    expect(localStorage.getItem(RECALL_CACHE_STORAGE_KEY)).toBeNull();
+  });
+
+  it('重写结果没有查询时也进入保底', async () => {
+    vi.mocked(rewrite.rewriteQuery).mockResolvedValue({ intent: '没有可用查询', queries: [] });
+    await runVectorRecall();
+    expect(embed.embedTexts).toHaveBeenCalledExactlyOnceWith([chat[1].mes], undefined);
+    expect(recallDebug).toMatchObject({ queryMode: 'traditional', fallbackReason: '查询重写未产出任何 query',
+      intent: '', queries: [chat[1].mes] });
+    expect(notices.toast).toHaveBeenCalledOnce();
+  });
+
+  it.each(['no user', 'blank latest user'] as const)('没有有效用户输入时提示无法保底:%s', async scenario => {
+    if (scenario === 'no user') chat.splice(1, 1);
+    else chat[1].mes = ' \n\t ';
+    vi.mocked(rewrite.rewriteQuery).mockRejectedValue(new Error('重写失败'));
+    await runVectorRecall();
+    expect(rewrite.rewriteQuery).toHaveBeenCalledOnce();
+    expect(embed.embedTexts).not.toHaveBeenCalled();
+    expect(store.vecSearch).not.toHaveBeenCalled();
+    expect(notices.toast).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('无法使用传统向量保底'), 'warning');
+    expect(recallDebug).toMatchObject({ queryMode: 'rewrite', fallbackReason: '重写失败', queries: [], injectedText: '' });
+    expect(recallDebug.status).toContain('无法使用传统向量保底');
+    expect(localStorage.getItem(RECALL_CACHE_STORAGE_KEY)).toBeNull();
+  });
+
+  it('保底不缓存,再次生成重新尝试重写,恢复后清除保底原因并正常缓存', async () => {
+    vi.mocked(rewrite.rewriteQuery)
+      .mockRejectedValueOnce(new Error('暂时不可用'))
+      .mockRejectedValueOnce(new Error('暂时不可用'));
+    await runVectorRecall();
+    chat[2].mes = '翻页后的新回复。';
+    await runVectorRecall();
+    expect(rewrite.rewriteQuery).toHaveBeenCalledTimes(2);
+    expect(embed.embedTexts).toHaveBeenCalledTimes(2);
+    expect(notices.toast).toHaveBeenCalledTimes(2);
+    expect(localStorage.getItem(RECALL_CACHE_STORAGE_KEY)).toBeNull();
+
+    await runVectorRecall();
+    expect(rewrite.rewriteQuery).toHaveBeenCalledTimes(3);
+    expect(embed.embedTexts).toHaveBeenLastCalledWith(['曾经的约定', '她与主角的往事'], undefined);
+    expect(recallDebug).toMatchObject({ queryMode: 'rewrite', fallbackReason: '', status: '召回完成' });
+    expect(localStorage.getItem(RECALL_CACHE_STORAGE_KEY)).not.toBeNull();
+    await runVectorRecall();
+    expect(rewrite.rewriteQuery).toHaveBeenCalledTimes(3);
+    expect(notices.toast).toHaveBeenCalledTimes(2);
+    expect(recallDebug.status).toBe('召回完成(复用缓存)');
+  });
+
+  it.each(['embedding', 'search'] as const)('重写成功后的%s失败不触发传统向量保底', async stage => {
+    if (stage === 'embedding') vi.mocked(embed.embedTexts).mockRejectedValue(new Error('向量化失败'));
+    else vi.mocked(store.vecSearch).mockRejectedValue(new Error('检索失败'));
+    await runVectorRecall();
+    expect(rewrite.rewriteQuery).toHaveBeenCalledOnce();
+    expect(embed.embedTexts).toHaveBeenCalledExactlyOnceWith(['曾经的约定', '她与主角的往事'], undefined);
+    expect(notices.toast).not.toHaveBeenCalled();
+    expect(recallDebug).toMatchObject({ queryMode: 'rewrite', fallbackReason: '', injectedText: '' });
+    expect(recallDebug.status).toContain('失败:');
+    expect(localStorage.getItem(RECALL_CACHE_STORAGE_KEY)).toBeNull();
+  });
+
+  it('重排失败时保留原有 embedding 降级,不切换查询方式', async () => {
+    vi.mocked(embed.rerankDocuments).mockRejectedValue(new Error('重排失败'));
+    await runVectorRecall();
+    expect(rewrite.rewriteQuery).toHaveBeenCalledOnce();
+    expect(embed.embedTexts).toHaveBeenCalledExactlyOnceWith(['曾经的约定', '她与主角的往事'], undefined);
+    expect(notices.toast).not.toHaveBeenCalled();
+    expect(recallDebug).toMatchObject({ queryMode: 'rewrite', fallbackReason: '', status: '召回完成' });
+  });
+
+  it('用户取消重写时不保底也不提示', async () => {
+    let rejectRewrite!: (reason: Error) => void;
+    vi.mocked(rewrite.rewriteQuery).mockImplementationOnce(() => new Promise((_, reject) => { rejectRewrite = reject; }));
+    const controller = new AbortController();
+    const running = runVectorRecall(controller.signal);
+    await vi.waitFor(() => expect(rewrite.rewriteQuery).toHaveBeenCalledOnce());
+    controller.abort();
+    rejectRewrite(new embed.EmbedError('Query 重写已取消'));
+    await running;
+    expect(embed.embedTexts).not.toHaveBeenCalled();
+    expect(notices.toast).not.toHaveBeenCalled();
+    expect(recallDebug).toMatchObject({ fallbackReason: '', status: '已取消召回', injectedText: '' });
+    expect(localStorage.getItem(RECALL_CACHE_STORAGE_KEY)).toBeNull();
+  });
+
+  it.each(['chat', 'round'] as const)('重写等待期间%s变化时不保底也不提示', async change => {
+    let rejectRewrite!: (reason: Error) => void;
+    vi.mocked(rewrite.rewriteQuery).mockImplementationOnce(() => new Promise((_, reject) => { rejectRewrite = reject; }));
+    const running = runVectorRecall();
+    await vi.waitFor(() => expect(rewrite.rewriteQuery).toHaveBeenCalledOnce());
+    if (change === 'chat') {
+      vi.mocked(context.getContext).mockReturnValue({ ...ctx, chat: [], chatMetadata: {} });
+      vi.mocked(scope.currentChatId).mockReturnValue('another-chat');
+    } else {
+      chat.push(message(true, '下一轮用户输入'));
+    }
+    rejectRewrite(new Error('重写失败'));
+    await running;
+    expect(embed.embedTexts).not.toHaveBeenCalled();
+    expect(notices.toast).not.toHaveBeenCalled();
+    expect(recallDebug).toMatchObject({ fallbackReason: '', status: '未注入:聊天或轮次已变化', injectedText: '' });
+    expect(localStorage.getItem(RECALL_CACHE_STORAGE_KEY)).toBeNull();
+  });
+
+  it('保底向量化失败时仍注入手动内容,并保留重写失败原因', async () => {
+    chat[0].extra = { bbs_leaf: { id: 'full', text: '手动选中的旧楼摘要', delta: {}, createdAt: 1, swipe: 0, v: 1 } };
+    await selectForcedRecall(0, 'summary');
+    vi.mocked(rewrite.rewriteQuery).mockRejectedValue(new Error('重写不可用'));
+    vi.mocked(embed.embedTexts).mockRejectedValue(new Error('向量化失败'));
+    await runVectorRecall();
+    expect(recallDebug).toMatchObject({ queryMode: 'traditional', fallbackReason: '重写不可用',
+      queries: [chat[1].mes], forced: [{ source: '#0', mode: 'summary', reason: '' }] });
+    expect(recallDebug.injectedText).toContain('手动选中的旧楼摘要');
+    expect(recallDebug.status).toContain('失败:向量化失败');
+    expect(notices.toast).toHaveBeenCalledOnce();
+    expect(localStorage.getItem(RECALL_CACHE_STORAGE_KEY)).toBeNull();
   });
 });
