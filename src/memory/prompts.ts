@@ -92,7 +92,7 @@ export interface PromptMacro {
 export const SUMMARY_MACROS: PromptMacro[] = [
   { token: '{{user}}', desc: '主角名' },
   { token: '{{char}}', desc: '角色名' },
-  { token: '{{history_block}}', desc: '本轮之前的历史剧情摘要' },
+  { token: '{{history_block}}', desc: '本轮之前的历史剧情摘要与关键事件' },
   { token: '{{state_time}}', desc: '当前已知时间' },
   { token: '{{state_location}}', desc: '当前已知地点' },
   { token: '{{protagonist_block}}', desc: '主角当前客观档案' },
@@ -130,7 +130,7 @@ export const RESUMMARY2_MACROS: PromptMacro[] = [
 
 /**
  * 记忆注入块的「私密简报」框定语:贴在每个注入回主对话的记忆块开头。
- * 为何需要:[当前状态]/[历史剧情摘要]/[相关回忆] 长得像数据面板,主模型容易误以为是
+ * 为何需要:[当前状态]/[历史剧情摘要]/[历史关键事件]/[相关回忆] 长得像数据面板,主模型容易误以为是
  * 要它填写/复述的模板,于是在正文后跟着输出一份状态快照。这句明确「只读、仅你可见、
  * 严禁复述」,把它们框定为幕后背景而非待输出内容。(时间标签提示词是真要模型输出标签的
  * 指令,不套这层框定。)
@@ -928,21 +928,21 @@ export function buildResummaryPrompt(
     // 兼容保存过旧版 {{target}} 的自定义模板;旧语义对应目标/最高字数。
     target: isSecond ? String(targets.max) : '',
   };
-  const factRule = a.keyFacts
-    ? '【人工关键事实】以下事实由程序原样保存并追加到总结尾部,仅供理解来源与核对叙事。与同一事件的正文矛盾时以事实为准;只生成叙事 summary,无需重复事实列表,不输出事实字段。字数预算仅约束叙事正文。'
+  const eventRule = a.keyFacts
+    ? '【人工关键事件】以下事件由程序原样保存,注入时放入与 [历史剧情摘要] 并列的 [历史关键事件],时间取自来源摘要,仅供理解来源与核对叙事。与同一事件的正文矛盾时以关键事件为准;只生成叙事 summary,无需重复关键事件列表,不输出事件字段。字数预算仅约束叙事正文。'
     : '';
-  const factReference = a.keyFacts ? `\n\n【人工关键事实只读参考(段号对应输入来源)】\n${a.keyFacts}` : '';
+  const eventReference = a.keyFacts ? `\n\n[历史关键事件]\n${a.keyFacts}` : '';
   if (custom && custom !== builtin.trim()) {
     // 与摘要同理,模板自带的段不重复补;两段都带时 system 为空,由调用方略过该消息
     const supplements: string[] = [];
     if (!custom.includes('【摘要时间语言铁律】')) supplements.push(RULE_ABSOLUTE_TIME_LANGUAGE);
     if (!custom.includes('【关系线保留】')) supplements.push(RULE_RELATION_MOMENTUM);
-    if (factRule) supplements.push(factRule);
-    return { system: supplements.join('\n\n'), user: fill(custom, macros) + factReference };
+    if (eventRule) supplements.push(eventRule);
+    return { system: supplements.join('\n\n'), user: fill(custom, macros) + eventReference };
   }
   return {
-    system: [fill(isSecond ? RESUMMARY2_RULES : RESUMMARY_RULES, macros), factRule].filter(Boolean).join('\n\n'),
-    user: fill(isSecond ? RESUMMARY2_INPUT : RESUMMARY_INPUT, macros) + factReference,
+    system: [fill(isSecond ? RESUMMARY2_RULES : RESUMMARY_RULES, macros), eventRule].filter(Boolean).join('\n\n'),
+    user: fill(isSecond ? RESUMMARY2_INPUT : RESUMMARY_INPUT, macros) + eventReference,
   };
 }
 
@@ -1007,7 +1007,7 @@ export function buildSummaryThinking(user: string, knowledge = false): string {
 
 /** 查询重写可用的宏(供设置页展示) */
 export const QUERY_REWRITE_MACROS: PromptMacro[] = [
-  { token: '{{history_block}}', desc: '历史剧情摘要(已注入为前置上下文)' },
+  { token: '{{history_block}}', desc: '历史剧情摘要与关键事件(已注入为前置上下文)' },
   { token: '{{state_snapshot}}', desc: '状态快照(滚出窗口的物品/计划)' },
 ];
 

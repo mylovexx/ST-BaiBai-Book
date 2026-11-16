@@ -26,9 +26,9 @@ export interface ViewNode {
   childIds: string[]; // comp 才有
   msgIndex: number; // leaf 才有意义(排序键);comp 取 -1
   active: boolean; // leaf:所在消息已隐藏
-  /** 摘要已删除,仍保留独立事实;不能代表旧总结中的叙事。 */
+  /** 摘要已删除,仍保留独立事件;不能代表旧总结中的叙事。 */
   factsOnly?: boolean;
-  /** 叶子自己的事实 / 总结动态继承的事实,仅为视图缓存。 */
+  /** 叶子自己的事件 / 总结动态继承的事件,仅为视图缓存。 */
   keyFacts?: SummaryKeyFactView[];
   /** 无逐楼 child 的导入历史节点;选择算法把它视为与 leaf 同类的完整终端。 */
   atomic?: boolean;
@@ -104,7 +104,7 @@ export function selectViewNodes(
   return chosen.sort((a, b) => viewNodeStartFloor(a, byId) - viewNodeStartFloor(b, byId));
 }
 
-/** 注入补入窗口内事实时仍沿用森林的楼层排序。 */
+/** 注入补入窗口内事件时仍沿用森林的楼层排序。 */
 export function viewNodeStartFloor(n: ViewNode, byId: Map<string, ViewNode>, seen = new Set<string>()): number {
   if (seen.has(n.id)) return Number.MAX_SAFE_INTEGER;
   seen.add(n.id);

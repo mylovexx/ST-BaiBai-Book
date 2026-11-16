@@ -101,8 +101,8 @@ function buildMessages(chat: STMessage[]): ChatMsg[] {
   // 开头唯一 system:破限(NVWA 核心)+ 系统提示词 +(可选)历史剧情摘要,合并为一条,
   // 既保证 system 只出现在开头,也让破限处于请求最前。核心不写进重写正文,统一由破限位提供
   // (自定义优先,留空用内置 NVWA 核心)。
-  const history = renderHistoryNodes(selectHistoryNodesBefore(memory.summaries, chat, windowStart));
-  const body = history ? `${QUERY_REWRITE_SYSTEM}\n\n[历史剧情摘要]\n${history}` : QUERY_REWRITE_SYSTEM;
+  const history = renderHistoryNodes(selectHistoryNodesBefore(memory.summaries, chat, windowStart), { sectionHeaders: true });
+  const body = history ? `${QUERY_REWRITE_SYSTEM}\n\n${history}` : QUERY_REWRITE_SYSTEM;
   const jb = apiSettings.prompts.jailbreak.trim() || JAILBREAK_PROMPT;
   const systemContent = `${jb}\n\n${body}`;
   const messages: ChatMsg[] = [{ role: 'system', content: systemContent }];

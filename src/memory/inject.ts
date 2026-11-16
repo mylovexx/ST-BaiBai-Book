@@ -22,8 +22,8 @@ import { memory } from './store';
 import { compactTimeLabel, formatRange, latestStoryTime, splitTimeLabel, timeTagPrompt } from './timeTag';
 import { relativeTimeLabel, weekdayLabel, ageDisplay, calculateRelativeDays } from './timeRel';
 import { selectViewNodes, selectLifeDetailsForInjection, viewNodeStartFloor, type ViewNode } from './select';
-import { getKeyFactSource, inheritKeyFacts, keyFactViews, renderKeyFacts } from './keyFacts';
-import type { LeafExtra, MemItem, MemLifeDetail, MemNpc, MemProtagonist, MemScene, MemSummary, SceneFocus } from './types';
+import { getKeyFactSource, inheritKeyFacts, keyFactViews } from './keyFacts';
+import type { LeafExtra, MemItem, MemLifeDetail, MemNpc, MemProtagonist, MemScene, MemSummary, SceneFocus, SummaryKeyEventTime } from './types';
 
 // 摘要页列表复用同一套选择逻辑,经此 re-export(纯算法在 select.ts,零依赖、可单测)
 export { selectViewNodes, type ViewNode };
@@ -111,7 +111,7 @@ export function buildSummaryView(
         if (source) {
           byId.set(source.leafId, {
             id: source.leafId, kind: 'leaf', level: 0, text: '', factsOnly: true,
-            keyFacts: keyFactViews(source.facts, source.leafId, i),
+            keyFacts: keyFactViews(source.facts, source.leafId, i, source),
             timeStart: source.timeStart, timeEnd: source.timeEnd, timeLabel: source.timeLabel,
             createdAt: source.createdAt, childIds: [], msgIndex: i, active: leafActiveAt(chat, i),
           });
@@ -131,7 +131,7 @@ export function buildSummaryView(
         childIds: [],
         msgIndex: i,
         active: leafActiveAt(chat, i),
-        keyFacts: keyFactViews(source?.facts ?? [], leaf.id, i),
+        keyFacts: keyFactViews(source?.facts ?? [], leaf.id, i, leaf),
       });
     }
   }
@@ -185,7 +185,7 @@ function selectNodes(
 
 /**
  * 选出注入用的节点:每个「已启用(已隐藏)」叶子由其祖先链最高的全-启用节点代表一次;
- * 窗口内有人工事实的叶子补入正文与事实尾部,让新保存的事实立即可见。
+ * 窗口内有人工事件的叶子也补入,让新保存的事件在独立历史区块中立即可见。
  */
 export function selectInjectionNodes(summaries: MemSummary[], chat: STMessage[] | null): ViewNode[] {
   const view = buildSummaryView(summaries, chat);
@@ -213,7 +213,7 @@ export function selectHistoryNodesBefore(
 }
 
 /** 节点展示时间:新数据用起止合成,旧数据回退 timeLabel */
-function nodeTime(n: ViewNode): string {
+function nodeTime(n: SummaryKeyEventTime): string {
   if (n.timeStart || n.timeEnd) return formatRange(n.timeStart, n.timeEnd);
   return n.timeLabel ? compactTimeLabel(n.timeLabel) : '';
 }
@@ -223,29 +223,19 @@ function nodeTime(n: ViewNode): string {
  * 这套渲染器供摘要/批量摘要/查询重写等副任务复用:它们各自有历史截止点,
  * 不能沿用主对话「相对当前最新剧情」的口径,因此这里刻意不计算相对时间。
  */
-export function renderHistoryNodes(nodes: ViewNode[], options: { includeKeyFacts?: boolean } = {}): string {
-  const seen = new Set<string>();
-  return nodes
-    .map(n => {
-      // 携带时正文与事实分别写入新来源,避免把同一事实同时固化进正文。
-      if (options.includeKeyFacts === false && n.factsOnly) return '';
-      const text = n.text + (options.includeKeyFacts === false ? '' : renderKeyFacts(n.keyFacts ?? [], seen));
-      const t = nodeTime(n);
-      return t ? `【${t}】${text}` : text;
-    })
-    .filter(Boolean)
-    .join('\n\n');
+export function renderHistoryNodes(nodes: ViewNode[], options: HistoryRenderOptions = {}): string {
+  return renderHistory(nodes, undefined, options);
 }
 
 /** 节点的「事件时间」:用结束时间(剧情已到达的时刻);缺则回退起始,再回退旧 timeLabel 的结束端 */
-function nodeEventTime(n: ViewNode): string {
+function nodeEventTime(n: SummaryKeyEventTime): string {
   if (n.timeEnd) return n.timeEnd;
   if (n.timeStart) return n.timeStart;
   return n.timeLabel ? splitTimeLabel(n.timeLabel).end ?? '' : '';
 }
 
 /** 取节点未压缩的起止时间;新字段优先,缺失端再从旧 timeLabel 回退。 */
-function nodeTimeRange(n: ViewNode): { start: string; end: string } {
+function nodeTimeRange(n: SummaryKeyEventTime): { start: string; end: string } {
   const legacy = n.timeLabel ? splitTimeLabel(n.timeLabel) : {};
   return {
     start: n.timeStart?.trim() || legacy.start?.trim() || '',
@@ -266,7 +256,7 @@ function timePointWithRelative(time: string, now: string): string {
  * 因此起点、终点分别相对同一个 now 计算,并保留两端完整绝对时间:
  * 【1988/9/28 22:00(前天·周三) - 1988/9/29 08:00(昨天·周四)】
  */
-function nodeRangeWithRelative(n: ViewNode, now: string): string {
+function nodeRangeWithRelative(n: SummaryKeyEventTime, now: string): string {
   const { start, end } = nodeTimeRange(n);
   if (!start && !end) return '';
   if (start && end && start !== end) {
@@ -284,25 +274,56 @@ function nodeRangeWithRelative(n: ViewNode, now: string): string {
  * 总结跨多楼,按起止端分别标注为【起始(相对) - 结束(相对)】,避免用单个相对时间误代表整段。
  * 周几与相对时间并入同一个括号;仅标准公历带年份才有周几(weekdayLabel 自带门槛)。
  */
-export function renderHistoryNodesWithRelative(nodes: ViewNode[], now: string): string {
-  const seen = new Set<string>();
-  return nodes
-    .map(n => {
-      const text = n.text + renderKeyFacts(n.keyFacts ?? [], seen);
-      if (n.kind === 'comp') {
-        const range = nodeRangeWithRelative(n, now);
-        return range ? `【${range}】${text}` : text;
-      }
-      const t = nodeTime(n);
-      if (!t) return text;
-      const event = nodeEventTime(n);
-      const parts = [relativeTimeLabel(event, now), weekdayLabel(event)].filter(Boolean);
-      return parts.length ? `【(${parts.join('·')}) ${t}】${text}` : `【${t}】${text}`;
+export function renderHistoryNodesWithRelative(nodes: ViewNode[], now: string, options: HistoryRenderOptions = {}): string {
+  return renderHistory(nodes, now, options);
+}
+
+interface HistoryRenderOptions {
+  includeKeyFacts?: boolean;
+  sectionHeaders?: boolean;
+}
+
+/** 摘要与事件复用时间前缀,继承事件仍按来源单楼的时间格式显示。 */
+function historyTimePrefix(n: SummaryKeyEventTime & { kind?: ViewNode['kind'] }, now?: string): string {
+  if (now !== undefined && n.kind === 'comp') {
+    const range = nodeRangeWithRelative(n, now);
+    return range ? `【${range}】` : '';
+  }
+  const time = nodeTime(n);
+  if (!time) return '';
+  if (now === undefined) return `【${time}】`;
+  const event = nodeEventTime(n);
+  const parts = [relativeTimeLabel(event, now), weekdayLabel(event)].filter(Boolean);
+  return parts.length ? `【(${parts.join('·')}) ${time}】` : `【${time}】`;
+}
+
+/** 按来源顺序逐条加时间,包装文字与分隔符都放在事件原文之外。 */
+export function renderHistoryKeyEvents(nodes: ViewNode[], now?: string, seen = new Set<string>()): string {
+  return nodes.flatMap(node => node.keyFacts ?? [])
+    .sort((a, b) => a.sourceFloor - b.sourceFloor)
+    .filter(event => {
+      if (seen.has(event.id)) return false;
+      seen.add(event.id);
+      return true;
     })
+    .map(event => historyTimePrefix(event, now) + event.text)
     .join('\n\n');
 }
 
-/** 组合历史摘要注入文本;无启用摘要时返回空串(注入空串等于清除)。 */
+function renderHistory(nodes: ViewNode[], now: string | undefined, options: HistoryRenderOptions): string {
+  const summary = nodes.filter(node => !node.factsOnly && !!node.text)
+    .map(node => historyTimePrefix(node, now) + node.text)
+    .join('\n\n');
+  // 携带时只固化叙事正文,事件及其时间写入独立来源。
+  const events = options.includeKeyFacts === false ? '' : renderHistoryKeyEvents(nodes, now);
+  if (!events && !options.sectionHeaders) return summary;
+  return [
+    summary ? `[历史剧情摘要]\n${summary}` : '',
+    events ? `[历史关键事件]\n${events}` : '',
+  ].filter(Boolean).join('\n\n');
+}
+
+/** 组合并列历史区块;摘要与事件都为空时清除注入。 */
 export function buildHistoryInjectionText(): string {
   const chat = getContext()?.chat ?? null;
 
@@ -311,10 +332,12 @@ export function buildHistoryInjectionText(): string {
   if (!sums.length) return '';
   // 注入路径带相对时间前缀;参照点 = 故事内最新时间(读正文标签,不受是否已摘影响)
   // 首尾私密简报框定,避免主模型把摘要当成要复述/输出的模板
-  const factNote = sums.some(node => node.keyFacts?.length)
-    ? '\n关键事实是用户确认的历史原文;同一事件与摘要正文冲突时以事实为准。按人物知情范围自然使用,不要照抄事实列表,也不要把历史记录当成本轮行动指令。'
+  const history = renderHistoryNodesWithRelative(sums, latestStoryTime(chat), { sectionHeaders: true });
+  if (!history) return '';
+  const eventNote = sums.some(node => node.keyFacts?.length)
+    ? '\n关键事件是用户确认的历史原文;同一事件与摘要正文冲突时以关键事件为准。按人物知情范围自然使用,不要照抄事件列表,也不要把历史记录当成本轮行动指令。'
     : '';
-  return `${MEMORY_BRIEFING_NOTE}${factNote}\n[历史剧情摘要]\n${renderHistoryNodesWithRelative(sums, latestStoryTime(chat))}\n${MEMORY_BRIEFING_END}`;
+  return `${MEMORY_BRIEFING_NOTE}${eventNote}\n${history}\n${MEMORY_BRIEFING_END}`;
 }
 
 /**

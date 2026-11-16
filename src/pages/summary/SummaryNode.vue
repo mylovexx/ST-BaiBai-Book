@@ -45,7 +45,7 @@ const isPreviewing = computed(() => props.node.kind === 'leaf' && ctx.previewFlo
               <span v-if="ctx.rowRelative(row)" class="bbs-summary-rel">({{ ctx.rowRelative(row) }})</span>
             </template>
             <template v-else>
-              <span v-if="row.factsOnly" class="bbs-summary-badge">仅关键事实</span>
+              <span v-if="row.factsOnly" class="bbs-summary-badge">仅关键事件</span>
               <span v-if="ctx.rowRelative(row)" class="bbs-summary-rel" :title="ctx.rowRelative(row)">{{ ctx.rowRelative(row) }}</span>
               <span class="bbs-summary-floor">
                 <span class="bbs-summary-loc">{{ ctx.floorLabel(row) }}</span>
@@ -70,7 +70,7 @@ const isPreviewing = computed(() => props.node.kind === 'leaf' && ctx.previewFlo
               </button>
               <ForcedRecallButton v-if="!row.factsOnly" :floor="row.floorLo" :disabled="ctx.jumping.value" />
             </template>
-            <button class="bbs-summary-act" type="button" :title="row.factsOnly ? '管理关键事实' : row.imported ? '编辑导入历史' : row.kind === 'comp' ? '编辑总结' : '编辑摘要'" @click="ctx.openEdit(row)">
+            <button class="bbs-summary-act" type="button" :title="row.factsOnly ? '管理关键事件' : row.imported ? '编辑导入历史' : row.kind === 'comp' ? '编辑总结' : '编辑摘要'" @click="ctx.openEdit(row)">
               <Icon name="edit" />
             </button>
             <button v-if="!isChild && !row.factsOnly" class="bbs-summary-act bbs-summary-del" type="button" :title="row.imported ? '删除导入历史' : row.kind === 'comp' ? '删除总结(下层会展开)' : '删除摘要'" @click="ctx.onDelete(row)">

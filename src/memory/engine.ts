@@ -8,12 +8,12 @@ import { toast } from '@/st/toast';
 import { addSummary, classifyNpcPresence, deriveMemory, finalizeDelta, fmtVarOpsInline, getLeaf, invalidateSummaryAncestors, itemChangesOf, leafValid, makeLeafId, pruneBrokenComps, syncItemLogFromMessage } from './apply';
 import { selectKnowledgeForSummary } from './knowledge';
 import { extractJsonObject } from './json';
-import { buildSummaryView, clearInjection, refreshInjection, renderHistoryNodes, selectHistoryNodesBefore } from './inject';
+import { buildSummaryView, clearInjection, refreshInjection, renderHistoryKeyEvents, renderHistoryNodes, selectHistoryNodesBefore } from './inject';
 import { buildBatchSummaryPrompt, buildBatchThinking, buildCharCardSystem, buildPersonaSystem, buildResummaryPrompt, buildSummaryPrompt, buildSummaryThinking, buildWorldInfoSystem, fmtItemLogInline, JAILBREAK_PROMPT, RESUMMARY_THINKING_CHECKLIST, selectRecentResolvedPlans } from './prompts';
 import { clampToTimeTags, cleanBody, parseTimeRange, syncTimeTagRegex, writeItemLogTag, writeVarLogTag } from './timeTag';
 import { renderSourceHints, type SourceExcerpt } from './sourceHints';
 import { memory, recomputeDerived, scheduleLeafFlush } from './store';
-import { getKeyFactSource, renderKeyFacts, syncKeyFactSource, syncLeafSwipe } from './keyFacts';
+import { getKeyFactSource, syncKeyFactSource, syncLeafSwipe } from './keyFacts';
 import type { LeafExtra, SummaryDelta } from './types';
 import { scheduleVectorIndex } from './vector';
 import { invalidateRecallCache } from './vector/cache';
@@ -1538,8 +1538,9 @@ function joinNodesForResummary(nodes: Array<{ id: string; text: string; timeStar
   const view = buildSummaryView(memory.summaries, getContext()?.chat ?? null);
   const seen = new Set<string>();
   const keyFacts = nodes.map((node, i) => {
-    const tail = renderKeyFacts(view.byId.get(node.id)?.keyFacts ?? [], seen);
-    return tail ? `[${i + 1}]${tail}` : '';
+    const source = view.byId.get(node.id);
+    const events = source ? renderHistoryKeyEvents([source], undefined, seen) : '';
+    return events ? `[${i + 1}]\n${events}` : '';
   }).filter(Boolean).join('\n\n');
   const sources = nodes.map((n, i) => {
     const start = llmOptionalScalar(n.timeStart);

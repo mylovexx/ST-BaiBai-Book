@@ -303,7 +303,12 @@ export async function createNewChatWithCarryover(): Promise<boolean> {
   // 合并历史摘要(窗口之前的剧情) = 种子叶子 text
   const history = selectHistoryNodesBefore(memory.summaries, sourceChat, carryStart);
   const mergedSummary = renderHistoryNodes(history, { includeKeyFacts: false });
-  const seedFacts = cleanKeyFacts(history.flatMap(node => node.keyFacts ?? []));
+  // 多个来源合并到种子后,事件仍使用原来源时间,不能全部变成种子的最新时间。
+  const seedFacts = cleanKeyFacts(history.flatMap(node => (node.keyFacts ?? []).map(event => ({
+    id: event.id,
+    text: event.text,
+    sourceTime: { timeStart: event.timeStart, timeEnd: event.timeEnd, timeLabel: event.timeLabel },
+  }))));
 
   // 种子叶子的时间锚:截止窗口前的状态时间(无则故事最新时间)
   const seedTime = stateBefore.state.time || latestStoryTime(sourceChat) || '';

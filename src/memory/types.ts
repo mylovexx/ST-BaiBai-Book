@@ -5,7 +5,7 @@
  *  - **叶子摘要**:存在 chat 消息对象的 extra.bbs_leaf 上(LeafExtra)。随消息/swipe
  *    由 ST 自动跟随(per-swipe extra)、随 chat 文件持久化。删消息→叶子随之消失;
  *    翻页/regenerate→按 swipe 页码切换有效叶子;普通正文编辑不再自动废除摘要。
- *  - **关键事实**:消息 extra.bbs_key_facts,与叶子分开存,删除/重建摘要不会删除事实。
+ *  - **关键事件**:消息 extra.bbs_key_facts,与叶子分开存,删除/重建摘要不会删除事件。
  *  - **压缩节点**(L1/L2…):存独立森林 chat_metadata.baibai_book.summaries(MemSummary,
  *    level≥1)。它是跨楼聚合、无单一消息可挂,用 childIds 引用下层(L1→叶子id、L2→L1id)。
  *
@@ -297,25 +297,30 @@ export interface MemPlan {
   targetTime?: string;
 }
 
-/** 人工确认的原文,由程序保留,不交给模型回写。 */
-export interface SummaryKeyFact {
-  id: string;
-  text: string;
-}
-
-/** 与摘要分开存,避免删除/重建摘要时连带丢掉事实。随所属 swipe 的消息 extra 持久化。 */
-export interface SummaryKeyFactsExtra {
-  leafId: string;
-  swipe: number;
-  facts: SummaryKeyFact[];
-  createdAt: number;
+export interface SummaryKeyEventTime {
   timeStart?: string;
   timeEnd?: string;
   timeLabel?: string;
 }
 
-/** 来源只用于展示与排序,不写进事实原文。 */
-export interface SummaryKeyFactView extends SummaryKeyFact {
+/** 人工确认的关键事件原文,由程序保留,不交给模型回写。 */
+export interface SummaryKeyFact {
+  id: string;
+  text: string;
+  /** 携带合并历史时保留原来源时间;空对象表示原来源没有时间。 */
+  sourceTime?: SummaryKeyEventTime;
+}
+
+/** 沿用旧存储字段,避免改名后丢失事件。随所属 swipe 的消息 extra 持久化。 */
+export interface SummaryKeyFactsExtra extends SummaryKeyEventTime {
+  leafId: string;
+  swipe: number;
+  facts: SummaryKeyFact[];
+  createdAt: number;
+}
+
+/** 来源与时间只用于展示和注入前缀,不写进事件原文。 */
+export interface SummaryKeyFactView extends SummaryKeyFact, SummaryKeyEventTime {
   sourceId: string;
   sourceFloor: number;
 }

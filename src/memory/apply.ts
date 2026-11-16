@@ -2297,7 +2297,7 @@ export function removeScene(path: string[]): boolean {
   return appendOpToLatestLeaf({ scenes: { ops: [{ op: 'remove', path: clean }] } });
 }
 
-/** 删除叙事叶子后清理祖先链;独立事实继续留在消息上。 */
+/** 删除叙事叶子后清理祖先链;独立事件继续留在消息上。 */
 export function deleteLeafAt(index: number): boolean {
   const chat = getContext()?.chat;
   if (!chat || !chat[index]?.extra?.bbs_leaf) return false;
@@ -2380,7 +2380,7 @@ export function editLeafFull(
   return true;
 }
 
-/** 删除摘要后仍可维护已有事实,不重建叙事摘要或改变 delta。 */
+/** 删除摘要后仍可维护已有事件,不重建叙事摘要或改变 delta。 */
 export function editKeyFactsAt(index: number, facts: SummaryKeyFact[]): boolean {
   const message = getContext()?.chat?.[index];
   if (!message) return false;

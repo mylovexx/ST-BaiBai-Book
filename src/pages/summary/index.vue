@@ -324,7 +324,7 @@ const byId = computed<Map<string, ViewNode>>(() => {
       id: l.id, kind: 'leaf', level: 0, text: l.text,
       timeStart: l.timeStart, timeEnd: l.timeEnd, timeLabel: l.timeLabel,
       createdAt: l.createdAt, childIds: [], msgIndex: l.msgIndex, active: l.active,
-      factsOnly: l.factsOnly, keyFacts: keyFactViews(l.keyFacts, l.id, l.msgIndex),
+      factsOnly: l.factsOnly, keyFacts: keyFactViews(l.keyFacts, l.id, l.msgIndex, l),
     });
   }
   for (const s of memory.summaries) {
@@ -397,7 +397,7 @@ const rootNodes = computed<ViewNode[]>(() => {
   const chosen = selectViewNodes({ byId: map, roots }, () => true);
   return chosen.sort((a, b) => nodeFloors(b, map)[1] - nodeFloors(a, map)[1]);
 });
-// 单独保留的事实不属于叙事摘要,不参与合并或批量删除摘要。
+// 单独保留的事件不属于叙事摘要,不参与合并或批量删除摘要。
 const selectableRoots = computed(() => rootNodes.value.filter(node => !node.factsOnly));
 
 /* ---- 视图态:展开 / 搜索 / 选择(三者互斥,均为临时 UI 态,不持久化) ---- */
@@ -788,7 +788,7 @@ function floorLabel(r: SummaryRow): string {
 async function onDelete(r: SummaryRow) {
   if (r.factsOnly) return;
   if (r.kind === 'leaf') {
-    if (!confirm('删除这条摘要?关键事实会单独保留。它带来的物品、计划、时间地点变化会按剩余摘要重新计算(可能回退);包含它的总结也会一并删除。原文楼层仍保持隐藏。')) return;
+    if (!confirm('删除这条摘要?关键事件会单独保留。它带来的物品、计划、时间地点变化会按剩余摘要重新计算(可能回退);包含它的总结也会一并删除。原文楼层仍保持隐藏。')) return;
     if (typeof r.msgIndex === 'number') deleteLeafAt(r.msgIndex);
   } else {
     if (r.imported) {
@@ -805,7 +805,7 @@ async function onDelete(r: SummaryRow) {
 }
 
 /* ============ 编辑弹窗 ============
- * 事实只在来源摘要上编辑;正文与事实分开提交,避免仅改事实时覆盖刚重生成的正文。
+ * 事件只在来源摘要上编辑;正文与事件分开提交,避免仅改事件时覆盖刚重生成的正文。
  * nested = 该节点已被某条总结收纳:编辑它不影响上层总结文本(总结只压快照),
  * 弹窗里提示用户「上层总结不会跟着变」,免得改完发现总结里旧信息还在、以为没保存上。 */
 type Editing =
@@ -1251,7 +1251,7 @@ provide(SUMMARY_CTX, {
               </template>
               <!-- 相对时间与楼层同高,日期独立一行避免挤开操作键。 -->
               <template v-else>
-                <span v-if="r.factsOnly" class="bbs-summary-badge">仅关键事实</span>
+                <span v-if="r.factsOnly" class="bbs-summary-badge">仅关键事件</span>
                 <span v-if="rowRelative(r)" class="bbs-summary-rel" :title="rowRelative(r)">{{ rowRelative(r) }}</span>
                 <span class="bbs-summary-floor">
                   <span class="bbs-summary-loc">{{ floorLabel(r) }}</span>
@@ -1295,7 +1295,7 @@ provide(SUMMARY_CTX, {
               <button
                 class="bbs-summary-act"
                 type="button"
-                :title="r.factsOnly ? '管理关键事实' : r.imported ? '编辑导入历史' : r.kind === 'comp' ? '编辑总结' : '编辑摘要'"
+                :title="r.factsOnly ? '管理关键事件' : r.imported ? '编辑导入历史' : r.kind === 'comp' ? '编辑总结' : '编辑摘要'"
                 @click="openEdit(r)"
               >
                 <Icon name="edit" />
@@ -1406,7 +1406,7 @@ provide(SUMMARY_CTX, {
       将永久删除所选 {{ selectionSummary.count }} 个条目所代表的摘要与总结
       ({{ selectionDeleteSummary.leaves }} 条逐楼摘要、{{ selectionDeleteSummary.summaries }} 条总结)。
       选中的总结所收纳的下层摘要也会一并删除；逐楼摘要带来的物品、计划、时间地点等状态会按剩余摘要重新计算，原文楼层仍保持隐藏。
-      关键事实会单独保留,可在来源楼层继续管理。
+      关键事件会单独保留,可在来源楼层继续管理。
       <template v-if="selectionDeleteSummary.imported">导入历史覆盖的原文楼层会重新显示。</template>
       此操作无法撤销，继续?
     </ConfirmDialog>
@@ -1521,21 +1521,21 @@ provide(SUMMARY_CTX, {
 
     <!-- ===== 编辑弹窗 ===== -->
     <ModalMask :open="!!editing" @close="cancelEdit">
-      <div v-if="editing" class="bbs-modal" role="dialog" aria-modal="true" :aria-label="editing.kind === 'comp' ? '编辑总结' : editing.factsOnly ? '管理关键事实' : '编辑摘要'">
+      <div v-if="editing" class="bbs-modal" role="dialog" aria-modal="true" :aria-label="editing.kind === 'comp' ? '编辑总结' : editing.factsOnly ? '管理关键事件' : '编辑摘要'">
         <header class="bbs-modal-head">
           <span class="bbs-modal-title">
-            {{ editing.kind === 'comp' ? `编辑${levelLabel(editing.level, editing.imported)}` : `${editing.factsOnly ? '管理关键事实' : '编辑摘要'} · 楼层 #${editing.msgIndex}` }}
+            {{ editing.kind === 'comp' ? `编辑${levelLabel(editing.level, editing.imported)}` : `${editing.factsOnly ? '管理关键事件' : '编辑摘要'} · 楼层 #${editing.msgIndex}` }}
           </span>
           <button class="bbs-summary-act" type="button" title="关闭" @click="cancelEdit"><Icon name="close" /></button>
         </header>
         <!-- 已被总结收纳的节点:提醒上层总结不会跟着变。叶子才提向量召回(总结不进向量库) -->
         <p v-if="editing.nested" class="bbs-field-hint bbs-nested-hint">
           {{ editing.kind === 'leaf'
-            ? '这条已被上层总结收纳:正文编辑不会自动更新上层正文;关键事实的修改会同步到各级总结。'
+            ? '这条已被上层总结收纳:正文编辑不会自动更新上层正文;关键事件的修改会同步到各级总结。'
             : '这条已被更上层总结收纳:改动不会同步到上层总结;若上层里也有同样的错误,请一并编辑。' }}
         </p>
         <!-- 时间仅叶子可编辑(起止两端);总结只压文本,无时间字段 -->
-        <p v-if="editing.kind === 'leaf' && editing.factsOnly" class="bbs-field-hint">摘要已删除,关键事实仍保留。新增事实请先补摘本楼摘要。</p>
+        <p v-if="editing.kind === 'leaf' && editing.factsOnly" class="bbs-field-hint">摘要已删除,关键事件仍保留。新增事件请先补摘本楼摘要。</p>
         <div v-if="editing.kind === 'leaf' && !editing.factsOnly" class="bbs-modal-field bbs-time-pair">
           <label class="bbs-time-col">
             <span class="bbs-modal-label">起始时间</span>
@@ -1552,7 +1552,7 @@ provide(SUMMARY_CTX, {
         </label>
         <KeyFactsEditor v-if="editing.kind === 'leaf'" v-model="editing.keyFacts" :allow-add="!editing.factsOnly" />
         <template v-else-if="inheritedEditingFacts.length">
-          <p class="bbs-field-hint">事实继承自下层摘要,请在来源摘要中修改。</p>
+          <p class="bbs-field-hint">事件继承自下层摘要,请在来源摘要中修改。</p>
           <KeyFactsList :facts="inheritedEditingFacts" show-sources expanded />
         </template>
         <footer class="bbs-modal-foot">

@@ -11,7 +11,7 @@ import { createEmptyMemory, MEMORY_KEY, MEMORY_VERSION, normalizeTemplate } from
 /**
  * 响应式记忆镜像。
  * 真源:① 压缩节点森林 = chat_metadata[MEMORY_KEY].summaries;② 叶子 = chat 各消息 extra.bbs_leaf;
- * ③ 独立事实 = 消息 extra.bbs_key_facts,删除叶子后仍可通过事实来源视图管理。
+ * ③ 独立事件 = 消息 extra.bbs_key_facts,删除叶子后仍可通过事件来源视图管理。
  * state / items / plans 是从 chat 重放出的派生缓存,供 Vue 渲染。
  */
 export const memory = reactive<BaibaiMemory>(createEmptyMemory());

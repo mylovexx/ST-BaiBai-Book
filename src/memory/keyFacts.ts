@@ -1,6 +1,6 @@
 import type { STMessage } from '@/st/context';
 import type { ViewNode } from './select';
-import type { LeafExtra, SummaryKeyFact, SummaryKeyFactsExtra, SummaryKeyFactView } from './types';
+import type { LeafExtra, SummaryKeyEventTime, SummaryKeyFact, SummaryKeyFactsExtra, SummaryKeyFactView } from './types';
 
 let factSeq = 0;
 
@@ -16,15 +16,23 @@ export function cleanKeyFacts(raw: unknown): SummaryKeyFact[] {
   const facts: SummaryKeyFact[] = [];
   for (const value of raw) {
     if (!value || typeof value !== 'object') continue;
-    const { id, text } = value as Record<string, unknown>;
+    const { id, text, sourceTime } = value as Record<string, unknown>;
     if (typeof id !== 'string' || !id.trim() || seen.has(id) || typeof text !== 'string' || !text.trim()) continue;
     seen.add(id);
-    facts.push({ id, text });
+    const fact: SummaryKeyFact = { id, text };
+    if (sourceTime && typeof sourceTime === 'object' && !Array.isArray(sourceTime)) {
+      const time = sourceTime as Record<string, unknown>;
+      fact.sourceTime = {};
+      for (const field of ['timeStart', 'timeEnd', 'timeLabel'] as const) {
+        if (typeof time[field] === 'string') fact.sourceTime[field] = time[field];
+      }
+    }
+    facts.push(fact);
   }
   return facts;
 }
 
-/** ST 会复制旧页 extra 到新页,必须校验事实自己的页码,避免串页。 */
+/** ST 会复制旧页 extra 到新页,必须校验事件自己的页码,避免串页。 */
 export function getKeyFactSource(message: STMessage | undefined): SummaryKeyFactsExtra | undefined {
   const raw = message?.extra?.bbs_key_facts;
   if (!raw || typeof raw.leafId !== 'string' || !raw.leafId || raw.swipe !== (message?.swipe_id ?? 0)) return;
@@ -45,14 +53,27 @@ export function getMessageKeyFacts(message: STMessage | undefined): SummaryKeyFa
   return getKeyFactSource(message)?.facts ?? [];
 }
 
-export function keyFactViews(facts: SummaryKeyFact[], sourceId: string, sourceFloor: number): SummaryKeyFactView[] {
-  return facts.map(fact => ({ ...fact, sourceId, sourceFloor }));
+export function keyFactViews(
+  facts: SummaryKeyFact[], sourceId: string, sourceFloor: number, sourceTime: SummaryKeyEventTime = {},
+): SummaryKeyFactView[] {
+  return facts.map(fact => {
+    const time = fact.sourceTime ?? sourceTime;
+    // 来源可能是完整叶子,只取时间字段,避免覆盖事件自己的 id 与原文。
+    return {
+      ...fact, sourceId, sourceFloor,
+      timeStart: time.timeStart, timeEnd: time.timeEnd, timeLabel: time.timeLabel,
+    };
+  });
 }
 
-/** 摘要不存在时只允许维护已有事实,添加入口仍限定在有效摘要上。 */
+/** 摘要不存在时只允许维护已有事件,添加入口仍限定在有效摘要上。 */
 export function writeMessageKeyFacts(message: STMessage, raw: SummaryKeyFact[], leaf?: LeafExtra): boolean {
   const previous = getKeyFactSource(message);
-  const facts = cleanKeyFacts(raw);
+  const previousTimes = new Map(previous?.facts.map(fact => [fact.id, fact.sourceTime]));
+  const facts = cleanKeyFacts(raw).map(fact => {
+    const sourceTime = fact.sourceTime ?? previousTimes.get(fact.id);
+    return sourceTime ? { ...fact, sourceTime } : fact;
+  });
   const currentLeaf = leaf && (leaf.swipe ?? 0) === (message.swipe_id ?? 0) ? leaf : undefined;
   if (!currentLeaf && !previous) return false;
   if (!currentLeaf && facts.some(fact => !previous?.facts.some(old => old.id === fact.id))) return false;
@@ -82,7 +103,7 @@ export function writeMessageKeyFacts(message: STMessage, raw: SummaryKeyFact[], 
   return true;
 }
 
-/** 只刷新事实的来源信息,模型生成的正文不会覆盖事实列表。 */
+/** 只刷新事件的来源信息,模型生成的正文不会覆盖事件列表。 */
 export function syncKeyFactSource(message: STMessage, leaf: LeafExtra): void {
   const source = getKeyFactSource(message);
   if (source) writeMessageKeyFacts(message, source.facts, leaf);
@@ -97,7 +118,7 @@ export function syncLeafSwipe(message: STMessage): void {
   info.extra = { ...(info.extra ?? {}), bbs_leaf: leaf };
 }
 
-/** 删除叙事摘要时保留独立事实,同时移除同一摘要的旧页备份。 */
+/** 删除叙事摘要时保留独立事件,同时移除同一摘要的旧页备份。 */
 export function removeMessageLeaf(message: STMessage, ids?: Set<string>): boolean {
   const leaf = message.extra?.bbs_leaf;
   const targets = ids ?? new Set(leaf ? [leaf.id] : []);
@@ -115,7 +136,7 @@ export function removeMessageLeaf(message: STMessage, ids?: Set<string>): boolea
   return removed;
 }
 
-/** 只生成视图缓存;总结的事实始终来自叶子,不会产生持久化副本。 */
+/** 只生成视图缓存;总结的事件及其时间始终来自叶子,不会产生持久化副本。 */
 export function inheritKeyFacts(byId: Map<string, ViewNode>): void {
   const memo = new Map<string, SummaryKeyFactView[]>();
   const visiting = new Set<string>();
@@ -144,15 +165,4 @@ export function inheritKeyFacts(byId: Map<string, ViewNode>): void {
   for (const node of byId.values()) {
     if (node.kind === 'comp') node.keyFacts = collect(node);
   }
-}
-
-/** 包装文字与分隔符在原文外添加,同一批注入按事实 id 去重。 */
-export function renderKeyFacts(facts: SummaryKeyFact[], seen = new Set<string>()): string {
-  const texts: string[] = [];
-  for (const fact of facts) {
-    if (seen.has(fact.id)) continue;
-    seen.add(fact.id);
-    texts.push(fact.text);
-  }
-  return texts.length ? `\n\n【关键事实】\n${texts.join('\n\n')}` : '';
 }

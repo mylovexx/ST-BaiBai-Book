@@ -5,7 +5,7 @@ withDefaults(defineProps<{ facts: SummaryKeyFactView[]; showSources?: boolean; q
   showSources: false, query: '', expanded: false,
 });
 
-/** 分段标亮而非 v-html,事实里的标签与符号仍作为原文显示。 */
+/** 分段标亮而非 v-html,事件里的标签与符号仍作为原文显示。 */
 function parts(text: string, query: string) {
   const needle = query.trim();
   if (!needle) return [{ text, hit: false }];
@@ -26,7 +26,7 @@ function parts(text: string, query: string) {
 
 <template>
   <details v-if="facts.length" class="bbs-key-facts-list" :open="expanded || !!query">
-    <summary @click.stop>关键事实 {{ facts.length }} 条<span v-if="showSources"> · 继承</span></summary>
+    <summary @click.stop>关键事件 {{ facts.length }} 条<span v-if="showSources"> · 继承</span></summary>
     <div v-for="fact in facts" :key="fact.id" class="bbs-key-facts-list-item">
       <span v-if="showSources" class="bbs-key-facts-source">来源楼层 #{{ fact.sourceFloor }}</span>
       <p class="bbs-key-fact-text"><template v-for="(part, index) in parts(fact.text, query)" :key="index"><mark v-if="part.hit">{{ part.text }}</mark><template v-else>{{ part.text }}</template></template></p>
