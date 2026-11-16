@@ -4,19 +4,22 @@ import ConfirmDialog from '@/components/ConfirmDialog.vue';
 import ModalMask from '@/components/ModalMask.vue';
 import ForcedRecallButton from '@/components/ForcedRecallButton.vue';
 import QuickFavoriteButton from '@/components/QuickFavoriteButton.vue';
+import KeyFactsEditor from '@/components/KeyFactsEditor.vue';
+import KeyFactsList from '@/components/KeyFactsList.vue';
 import { captureFavoriteTarget, favoriteBody, favoriteTargetCurrent, type FavoriteTarget } from '@/favorites/store';
-import { addSummary, appendOpToLatestLeaf, deleteLeafAt, deleteSummary, deleteSummarySubtrees, editLeafAt, editPlan, editSummary, invalidateSummaryAncestors } from '@/memory/apply';
+import { addSummary, appendOpToLatestLeaf, deleteLeafAt, deleteSummary, deleteSummarySubtrees, editKeyFactsAt, editLeafAt, editPlan, editSummary, getLeaf, invalidateSummaryAncestors } from '@/memory/apply';
+import { inheritKeyFacts, keyFactViews } from '@/memory/keyFacts';
 import { apiSettings } from '@/api/settings';
 import { batchBackfill, batchState, cancelBatchBackfill, engineState, floorBackfillState, isAiFloor, resummarizeNow, summarizeFloor, summarizeSelected, syncHiddenNow } from '@/memory/engine';
 import { estimateInjectionTokenBreakdown, refreshInjection, selectViewNodes, type ViewNode } from '@/memory/inject';
 import { compactTimeLabel, formatRange, splitTimeLabel } from '@/memory/timeTag';
 import { relativeTimeLabel, weekdayLabel } from '@/memory/timeRel';
 import { derivedMeta, memory, recomputeDerived } from '@/memory/store';
-import type { SceneFocus } from '@/memory/types';
+import type { SceneFocus, SummaryKeyFact } from '@/memory/types';
 import { closeBook } from '@/state/ui';
-import { getContext, jumpToFloor } from '@/st/context';
+import { getContext, jumpToFloor, type STMessage } from '@/st/context';
 import { toast } from '@/st/toast';
-import { computed, nextTick, onMounted, onUnmounted, provide, ref, shallowRef, watch } from 'vue';
+import { computed, markRaw, nextTick, onMounted, onUnmounted, provide, ref, shallowRef, watch, type Raw } from 'vue';
 import SummaryNode from './SummaryNode.vue';
 import { SUMMARY_CTX, type SummaryRow } from './ctx';
 
@@ -30,6 +33,7 @@ const resetViewStates = () => {
   searchQuery.value = '';
   searchOpen.value = false;
   preview.value = null;
+  editing.value = null;
   closeImportHistory();
   exitSelectMode();
 };
@@ -320,6 +324,7 @@ const byId = computed<Map<string, ViewNode>>(() => {
       id: l.id, kind: 'leaf', level: 0, text: l.text,
       timeStart: l.timeStart, timeEnd: l.timeEnd, timeLabel: l.timeLabel,
       createdAt: l.createdAt, childIds: [], msgIndex: l.msgIndex, active: l.active,
+      factsOnly: l.factsOnly, keyFacts: keyFactViews(l.keyFacts, l.id, l.msgIndex),
     });
   }
   for (const s of memory.summaries) {
@@ -334,6 +339,7 @@ const byId = computed<Map<string, ViewNode>>(() => {
       floorEnd: s.importedFloorEnd,
     });
   }
+  inheritKeyFacts(m);
   return m;
 });
 
@@ -376,6 +382,8 @@ function toRow(n: ViewNode, map: Map<string, ViewNode>): SummaryRow {
     msgIndex: n.kind === 'leaf' ? n.msgIndex : undefined,
     stale: false,
     imported: n.atomic === true,
+    factsOnly: n.factsOnly,
+    keyFacts: n.keyFacts ?? [],
   };
 }
 
@@ -389,6 +397,8 @@ const rootNodes = computed<ViewNode[]>(() => {
   const chosen = selectViewNodes({ byId: map, roots }, () => true);
   return chosen.sort((a, b) => nodeFloors(b, map)[1] - nodeFloors(a, map)[1]);
 });
+// 单独保留的事实不属于叙事摘要,不参与合并或批量删除摘要。
+const selectableRoots = computed(() => rootNodes.value.filter(node => !node.factsOnly));
 
 /* ---- 视图态:展开 / 搜索 / 选择(三者互斥,均为临时 UI 态,不持久化) ---- */
 const expanded = ref<Set<string>>(new Set()); // 已展开的 comp id
@@ -558,6 +568,7 @@ function buildSearchRows(): DisplayRow[] {
     const base = toRow(n, map);
     let hit = false;
     if (n.text && n.text.toLowerCase().includes(qLower)) hit = true;
+    if (!hit && n.kind === 'leaf' && n.keyFacts?.some(fact => fact.text.toLowerCase().includes(qLower))) hit = true;
     if (!hit && floorNum !== null && base.floorLo >= 0 && floorNum >= base.floorLo && floorNum <= base.floorHi) hit = true;
     if (!hit) {
       const t = base.timeStart || base.timeEnd ? formatRange(base.timeStart, base.timeEnd) : (base.timeLabel ? compactTimeLabel(base.timeLabel) : '');
@@ -576,7 +587,7 @@ const visibleRows = computed<DisplayRow[]>(() => {
   if (searching.value) return buildSearchRows();
   const map = byId.value;
   // 选择模式:仅根,倒序,带复选框
-  return rootNodes.value.map(n => ({ ...toRow(n, map), isChild: false }));
+  return selectableRoots.value.map(n => ({ ...toRow(n, map), isChild: false }));
 });
 
 /** 搜索命中文本切片:把 text 按命中词切成 [{t, hit}] 片段,模板用 span 渲染(不走 v-html,防 XSS)。 */
@@ -616,7 +627,7 @@ function toggleSelect(id: string) {
 
 /** 根是否已全部勾选(驱动「全选 / 取消全选」文案) */
 const allSelected = computed(() => {
-  const roots = rootNodes.value;
+  const roots = selectableRoots.value;
   return roots.length > 0 && roots.every(n => selectedIds.value.has(n.id));
 });
 /** 全选 / 取消全选切换:全选时写入全部根 id;已全选则清空。 */
@@ -624,13 +635,13 @@ function toggleSelectAll() {
   if (allSelected.value) {
     selectedIds.value = new Set();
   } else {
-    selectedIds.value = new Set(rootNodes.value.map(n => n.id));
+    selectedIds.value = new Set(selectableRoots.value.map(n => n.id));
   }
 }
 
 /** 选中项在根序列(倒序)里的位置索引,升序排列 */
 const selectedRootIndexes = computed<number[]>(() => {
-  const roots = rootNodes.value;
+  const roots = selectableRoots.value;
   const idxs: number[] = [];
   roots.forEach((n, i) => { if (selectedIds.value.has(n.id)) idxs.push(i); });
   return idxs;
@@ -645,7 +656,7 @@ const canMerge = computed(() => {
 /** 选中项覆盖的楼层范围与将生成的层级(供操作条展示) */
 const selectionSummary = computed(() => {
   const map = byId.value;
-  const picked = rootNodes.value.filter(n => selectedIds.value.has(n.id));
+  const picked = selectableRoots.value.filter(n => selectedIds.value.has(n.id));
   if (!picked.length) return { count: 0, floorLo: -1, floorHi: -1, level: 1 };
   let lo = Infinity, hi = -Infinity, maxLevel = 0;
   for (const n of picked) {
@@ -673,7 +684,7 @@ async function runMerge() {
   if (!canMerge.value || merging.value) return;
   // 按根序列升序(即楼层旧→新)传给引擎;引擎内部还会再排一次
   const idxs = [...selectedRootIndexes.value].sort((a, b) => a - b);
-  const ids = idxs.map(i => rootNodes.value[i].id);
+  const ids = idxs.map(i => selectableRoots.value[i].id);
   merging.value = true;
   try {
     const res = await summarizeSelected(ids);
@@ -775,8 +786,9 @@ function floorLabel(r: SummaryRow): string {
 }
 
 async function onDelete(r: SummaryRow) {
+  if (r.factsOnly) return;
   if (r.kind === 'leaf') {
-    if (!confirm('删除这条摘要?它带来的物品、计划、时间地点变化会按剩余摘要重新计算(可能回退);包含它的总结也会一并删除。原文楼层仍保持隐藏。')) return;
+    if (!confirm('删除这条摘要?关键事实会单独保留。它带来的物品、计划、时间地点变化会按剩余摘要重新计算(可能回退);包含它的总结也会一并删除。原文楼层仍保持隐藏。')) return;
     if (typeof r.msgIndex === 'number') deleteLeafAt(r.msgIndex);
   } else {
     if (r.imported) {
@@ -793,13 +805,16 @@ async function onDelete(r: SummaryRow) {
 }
 
 /* ============ 编辑弹窗 ============
- * 叶子:可改「故事内时间」+ 正文;总结:只压文本,故只改正文。
+ * 事实只在来源摘要上编辑;正文与事实分开提交,避免仅改事实时覆盖刚重生成的正文。
  * nested = 该节点已被某条总结收纳:编辑它不影响上层总结文本(总结只压快照),
  * 弹窗里提示用户「上层总结不会跟着变」,免得改完发现总结里旧信息还在、以为没保存上。 */
 type Editing =
-  | { kind: 'leaf'; msgIndex: number; text: string; timeStart: string; timeEnd: string; nested: boolean }
+  | { kind: 'leaf'; msgIndex: number; text: string; timeStart: string; timeEnd: string; nested: boolean; factsOnly: boolean; keyFacts: SummaryKeyFact[]; target: Raw<STMessage>; chatId: string; swipe: number;
+      original: { text: string; timeStart: string; timeEnd: string; facts: string } }
   | { kind: 'comp'; compId: string; level: number; text: string; imported: boolean; nested: boolean };
 const editing = ref<Editing | null>(null);
+const inheritedEditingFacts = computed(() => editing.value?.kind === 'comp'
+  ? byId.value.get(editing.value.compId)?.keyFacts ?? [] : []);
 
 /** 该 id 是否已被任何总结的 childIds 收纳(= 展开视图里的深层行) */
 function isNested(id: string): boolean {
@@ -809,6 +824,10 @@ function isNested(id: string): boolean {
 function openEdit(r: SummaryRow) {
   preview.value = null;
   if (r.kind === 'leaf' && typeof r.msgIndex === 'number') {
+    const ctx = getContext();
+    const target = ctx?.chat?.[r.msgIndex];
+    const chatId = ctx?.getCurrentChatId?.();
+    if (!target || !chatId) { toast('来源楼层已变化,请重新选择', 'warning'); return; }
     // 旧数据无 timeStart/timeEnd 时,从已固化的 timeLabel 拆出起止填入
     const fb = !r.timeStart && !r.timeEnd ? splitTimeLabel(r.timeLabel) : {};
     editing.value = {
@@ -818,6 +837,13 @@ function openEdit(r: SummaryRow) {
       timeStart: r.timeStart ?? fb.start ?? '',
       timeEnd: r.timeEnd ?? fb.end ?? '',
       nested: isNested(r.id),
+      factsOnly: r.factsOnly === true,
+      keyFacts: r.keyFacts.map(({ id, text }) => ({ id, text })),
+      target: markRaw(target), chatId, swipe: target.swipe_id ?? 0,
+      original: {
+        text: r.text, timeStart: r.timeStart ?? fb.start ?? '', timeEnd: r.timeEnd ?? fb.end ?? '',
+        facts: JSON.stringify(r.keyFacts.map(({ id, text }) => ({ id, text }))),
+      },
     };
   } else if (r.kind === 'comp') {
     editing.value = { kind: 'comp', compId: r.id, level: r.level, text: r.text, imported: r.imported === true, nested: isNested(r.id) };
@@ -829,8 +855,27 @@ function cancelEdit() {
 function saveEdit() {
   const e = editing.value;
   if (!e) return;
-  if (e.kind === 'leaf') editLeafAt(e.msgIndex, e.text, e.timeStart, e.timeEnd);
-  else editSummary(e.compId, e.text);
+  const ctx = getContext();
+  if (e.kind === 'leaf' && (ctx?.getCurrentChatId?.() !== e.chatId || ctx.chat?.[e.msgIndex] !== e.target
+    || (e.target.swipe_id ?? 0) !== e.swipe || e.target.extra?.bbs_omit)) {
+    toast('来源楼层或 swipe 已变化,请重新打开编辑', 'warning');
+    return;
+  }
+  let saved: boolean;
+  if (e.kind === 'leaf') {
+    const factsChanged = JSON.stringify(e.keyFacts) !== e.original.facts;
+    const narrativeChanged = e.text !== e.original.text || e.timeStart !== e.original.timeStart || e.timeEnd !== e.original.timeEnd;
+    if (!narrativeChanged) saved = factsChanged ? editKeyFactsAt(e.msgIndex, e.keyFacts) : true;
+    else {
+      const leaf = getLeaf(e.target);
+      saved = !!leaf && editLeafAt(e.msgIndex,
+        e.text !== e.original.text ? e.text : leaf.text,
+        e.timeStart !== e.original.timeStart ? e.timeStart : leaf.timeStart ?? '',
+        e.timeEnd !== e.original.timeEnd ? e.timeEnd : leaf.timeEnd ?? '',
+        factsChanged ? e.keyFacts : undefined);
+    }
+  } else saved = editSummary(e.compId, e.text);
+  if (!saved) { toast('来源摘要已变化,请重新打开编辑', 'warning'); return; }
   refreshInjection();
   editing.value = null;
 }
@@ -1038,7 +1083,7 @@ provide(SUMMARY_CTX, {
           v-if="!selectMode"
           class="bbs-btn bbs-btn-sm"
           type="button"
-          :disabled="!rootNodes.length || searching"
+          :disabled="!selectableRoots.length || searching"
           title="勾选连续的多条摘要,手动合并成一条总结"
           @click="enterSelectMode"
         >
@@ -1206,6 +1251,7 @@ provide(SUMMARY_CTX, {
               </template>
               <!-- 相对时间与楼层同高,日期独立一行避免挤开操作键。 -->
               <template v-else>
+                <span v-if="r.factsOnly" class="bbs-summary-badge">仅关键事实</span>
                 <span v-if="rowRelative(r)" class="bbs-summary-rel" :title="rowRelative(r)">{{ rowRelative(r) }}</span>
                 <span class="bbs-summary-floor">
                   <span class="bbs-summary-loc">{{ floorLabel(r) }}</span>
@@ -1244,18 +1290,18 @@ provide(SUMMARY_CTX, {
                 >
                   <Icon name="navigate" />
                 </button>
-                <ForcedRecallButton :floor="r.floorLo" :disabled="jumping" />
+                <ForcedRecallButton v-if="!r.factsOnly" :floor="r.floorLo" :disabled="jumping" />
               </template>
               <button
                 class="bbs-summary-act"
                 type="button"
-                :title="r.imported ? '编辑导入历史' : r.kind === 'comp' ? '编辑总结' : '编辑摘要'"
+                :title="r.factsOnly ? '管理关键事实' : r.imported ? '编辑导入历史' : r.kind === 'comp' ? '编辑总结' : '编辑摘要'"
                 @click="openEdit(r)"
               >
                 <Icon name="edit" />
               </button>
               <button
-                v-if="!r.isChild"
+                v-if="!r.isChild && !r.factsOnly"
                 class="bbs-summary-act bbs-summary-del"
                 type="button"
                 :title="r.imported ? '删除导入历史' : r.kind === 'comp' ? '删除总结(下层会展开)' : '删除摘要'"
@@ -1268,12 +1314,13 @@ provide(SUMMARY_CTX, {
               {{ rowTime(r) }}
             </span>
           </header>
-          <p class="bbs-summary-text">
+          <p v-if="r.text" class="bbs-summary-text">
             <template v-for="(seg, i) in highlightParts(r.text)" :key="i">
               <mark v-if="seg.hit" class="bbs-hit">{{ seg.t }}</mark>
               <template v-else>{{ seg.t }}</template>
             </template>
           </p>
+          <KeyFactsList :facts="r.keyFacts" :show-sources="r.kind === 'comp'" :query="searching ? searchQuery : ''" :expanded="r.factsOnly" />
           <div v-if="!selectMode && r.kind === 'leaf' && previewFloor === r.floorLo" class="bbs-floor-preview">
             <p class="bbs-floor-preview-text">{{ previewBody || '该楼层暂无可预览正文' }}</p>
           </div>
@@ -1307,7 +1354,7 @@ provide(SUMMARY_CTX, {
       <button
         class="bbs-btn bbs-btn-sm"
         type="button"
-        :disabled="!rootNodes.length || deleting"
+        :disabled="!selectableRoots.length || deleting"
         :title="allSelected ? '取消全选' : '全选全部根摘要'"
         @click="toggleSelectAll"
       >
@@ -1356,9 +1403,10 @@ provide(SUMMARY_CTX, {
       tone="danger"
       @confirm="runDeleteSelected"
     >
-      将永久删除所选 {{ selectionSummary.count }} 个条目所代表的全部内容
+      将永久删除所选 {{ selectionSummary.count }} 个条目所代表的摘要与总结
       ({{ selectionDeleteSummary.leaves }} 条逐楼摘要、{{ selectionDeleteSummary.summaries }} 条总结)。
       选中的总结所收纳的下层摘要也会一并删除；逐楼摘要带来的物品、计划、时间地点等状态会按剩余摘要重新计算，原文楼层仍保持隐藏。
+      关键事实会单独保留,可在来源楼层继续管理。
       <template v-if="selectionDeleteSummary.imported">导入历史覆盖的原文楼层会重新显示。</template>
       此操作无法撤销，继续?
     </ConfirmDialog>
@@ -1473,21 +1521,22 @@ provide(SUMMARY_CTX, {
 
     <!-- ===== 编辑弹窗 ===== -->
     <ModalMask :open="!!editing" @close="cancelEdit">
-      <div v-if="editing" class="bbs-modal" role="dialog" aria-modal="true" :aria-label="editing.kind === 'comp' ? '编辑总结' : '编辑摘要'">
+      <div v-if="editing" class="bbs-modal" role="dialog" aria-modal="true" :aria-label="editing.kind === 'comp' ? '编辑总结' : editing.factsOnly ? '管理关键事实' : '编辑摘要'">
         <header class="bbs-modal-head">
           <span class="bbs-modal-title">
-            {{ editing.kind === 'comp' ? `编辑${levelLabel(editing.level, editing.imported)}` : `编辑摘要 · 楼层 #${editing.msgIndex}` }}
+            {{ editing.kind === 'comp' ? `编辑${levelLabel(editing.level, editing.imported)}` : `${editing.factsOnly ? '管理关键事实' : '编辑摘要'} · 楼层 #${editing.msgIndex}` }}
           </span>
           <button class="bbs-summary-act" type="button" title="关闭" @click="cancelEdit"><Icon name="close" /></button>
         </header>
         <!-- 已被总结收纳的节点:提醒上层总结不会跟着变。叶子才提向量召回(总结不进向量库) -->
         <p v-if="editing.nested" class="bbs-field-hint bbs-nested-hint">
           {{ editing.kind === 'leaf'
-            ? '这条已被上层总结收纳:改动会用于向量召回,但上层总结的文本不会自动更新;若总结里也有同样的错误,请一并编辑。'
+            ? '这条已被上层总结收纳:正文编辑不会自动更新上层正文;关键事实的修改会同步到各级总结。'
             : '这条已被更上层总结收纳:改动不会同步到上层总结;若上层里也有同样的错误,请一并编辑。' }}
         </p>
         <!-- 时间仅叶子可编辑(起止两端);总结只压文本,无时间字段 -->
-        <div v-if="editing.kind === 'leaf'" class="bbs-modal-field bbs-time-pair">
+        <p v-if="editing.kind === 'leaf' && editing.factsOnly" class="bbs-field-hint">摘要已删除,关键事实仍保留。新增事实请先补摘本楼摘要。</p>
+        <div v-if="editing.kind === 'leaf' && !editing.factsOnly" class="bbs-modal-field bbs-time-pair">
           <label class="bbs-time-col">
             <span class="bbs-modal-label">起始时间</span>
             <input v-model="editing.timeStart" class="bbs-input" type="text" placeholder="如 1988/9/29 21:00" />
@@ -1497,10 +1546,15 @@ provide(SUMMARY_CTX, {
             <input v-model="editing.timeEnd" class="bbs-input" type="text" placeholder="如 1988/9/29 21:30" />
           </label>
         </div>
-        <label class="bbs-modal-field">
+        <label v-if="editing.kind === 'comp' || !editing.factsOnly" class="bbs-modal-field">
           <span class="bbs-modal-label">{{ editing.kind === 'comp' ? (editing.imported ? '导入历史正文' : '总结正文') : '摘要正文' }}</span>
           <textarea v-model="editing.text" class="bbs-input bbs-modal-textarea" rows="8"></textarea>
         </label>
+        <KeyFactsEditor v-if="editing.kind === 'leaf'" v-model="editing.keyFacts" :allow-add="!editing.factsOnly" />
+        <template v-else-if="inheritedEditingFacts.length">
+          <p class="bbs-field-hint">事实继承自下层摘要,请在来源摘要中修改。</p>
+          <KeyFactsList :facts="inheritedEditingFacts" show-sources expanded />
+        </template>
         <footer class="bbs-modal-foot">
           <button class="bbs-btn" type="button" @click="cancelEdit">取消</button>
           <button class="bbs-btn bbs-btn-primary" type="button" @click="saveEdit">保存</button>

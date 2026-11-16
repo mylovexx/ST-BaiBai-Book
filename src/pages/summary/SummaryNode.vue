@@ -7,6 +7,7 @@
 import Icon from '@/components/Icon.vue';
 import ForcedRecallButton from '@/components/ForcedRecallButton.vue';
 import QuickFavoriteButton from '@/components/QuickFavoriteButton.vue';
+import KeyFactsList from '@/components/KeyFactsList.vue';
 import { computed, inject } from 'vue';
 import type { ViewNode } from '@/memory/inject';
 import { SUMMARY_CTX, type SummaryCtx } from './ctx';
@@ -44,6 +45,7 @@ const isPreviewing = computed(() => props.node.kind === 'leaf' && ctx.previewFlo
               <span v-if="ctx.rowRelative(row)" class="bbs-summary-rel">({{ ctx.rowRelative(row) }})</span>
             </template>
             <template v-else>
+              <span v-if="row.factsOnly" class="bbs-summary-badge">仅关键事实</span>
               <span v-if="ctx.rowRelative(row)" class="bbs-summary-rel" :title="ctx.rowRelative(row)">{{ ctx.rowRelative(row) }}</span>
               <span class="bbs-summary-floor">
                 <span class="bbs-summary-loc">{{ ctx.floorLabel(row) }}</span>
@@ -66,12 +68,12 @@ const isPreviewing = computed(() => props.node.kind === 'leaf' && ctx.previewFlo
                 @click.stop="ctx.jumpFloor(row.floorLo)" @keydown.enter.stop @keydown.space.stop>
                 <Icon name="navigate" />
               </button>
-              <ForcedRecallButton :floor="row.floorLo" :disabled="ctx.jumping.value" />
+              <ForcedRecallButton v-if="!row.factsOnly" :floor="row.floorLo" :disabled="ctx.jumping.value" />
             </template>
-            <button class="bbs-summary-act" type="button" :title="row.imported ? '编辑导入历史' : row.kind === 'comp' ? '编辑总结' : '编辑摘要'" @click="ctx.openEdit(row)">
+            <button class="bbs-summary-act" type="button" :title="row.factsOnly ? '管理关键事实' : row.imported ? '编辑导入历史' : row.kind === 'comp' ? '编辑总结' : '编辑摘要'" @click="ctx.openEdit(row)">
               <Icon name="edit" />
             </button>
-            <button v-if="!isChild" class="bbs-summary-act bbs-summary-del" type="button" :title="row.imported ? '删除导入历史' : row.kind === 'comp' ? '删除总结(下层会展开)' : '删除摘要'" @click="ctx.onDelete(row)">
+            <button v-if="!isChild && !row.factsOnly" class="bbs-summary-act bbs-summary-del" type="button" :title="row.imported ? '删除导入历史' : row.kind === 'comp' ? '删除总结(下层会展开)' : '删除摘要'" @click="ctx.onDelete(row)">
               <Icon name="trash" />
             </button>
           </span>
@@ -79,7 +81,8 @@ const isPreviewing = computed(() => props.node.kind === 'leaf' && ctx.previewFlo
             {{ ctx.rowTime(row) }}
           </span>
         </header>
-        <p class="bbs-summary-text">{{ row.text }}</p>
+        <p v-if="row.text" class="bbs-summary-text">{{ row.text }}</p>
+        <KeyFactsList :facts="row.keyFacts" :show-sources="row.kind === 'comp'" :expanded="row.factsOnly" />
         <div v-if="isPreviewing" class="bbs-floor-preview">
           <p class="bbs-floor-preview-text">{{ ctx.previewBody.value || '该楼层暂无可预览正文' }}</p>
         </div>

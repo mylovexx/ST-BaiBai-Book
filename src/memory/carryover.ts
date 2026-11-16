@@ -20,6 +20,7 @@ import { deriveMemory, makeLeafId, planId } from './apply';
 import { resolveKeepStart } from './engine';
 import { knowledgeId } from './knowledge';
 import { refreshInjection, renderHistoryNodes, selectHistoryNodesBefore } from './inject';
+import { cleanKeyFacts, syncLeafSwipe, writeMessageKeyFacts } from './keyFacts';
 import { latestStoryTime } from './timeTag';
 import { memory, recomputeDerived, saveMemory, flushLeavesNow } from './store';
 import type { JsonValue, LeafExtra, MemSummary, StoredDelta } from './types';
@@ -300,7 +301,9 @@ export async function createNewChatWithCarryover(): Promise<boolean> {
   const knowledgeIds = new Map(stateBefore.knowledge.map((k, i) => [k.id, knowledgeId(seedLeafId, i)]));
 
   // 合并历史摘要(窗口之前的剧情) = 种子叶子 text
-  const mergedSummary = renderHistoryNodes(selectHistoryNodesBefore(memory.summaries, sourceChat, carryStart));
+  const history = selectHistoryNodesBefore(memory.summaries, sourceChat, carryStart);
+  const mergedSummary = renderHistoryNodes(history, { includeKeyFacts: false });
+  const seedFacts = cleanKeyFacts(history.flatMap(node => node.keyFacts ?? []));
 
   // 种子叶子的时间锚:截止窗口前的状态时间(无则故事最新时间)
   const seedTime = stateBefore.state.time || latestStoryTime(sourceChat) || '';
@@ -314,7 +317,7 @@ export async function createNewChatWithCarryover(): Promise<boolean> {
     carryMessages.push(sanitizeCarryMessage(m, detailIds, planIds, knowledgeIds));
   }
 
-  if (!mergedSummary && !carryMessages.length && !deltaHasData(seedDelta)) {
+  if (!mergedSummary && !seedFacts.length && !carryMessages.length && !deltaHasData(seedDelta)) {
     toast('当前对话没有可携带的数据', 'warning');
     return false;
   }
@@ -382,13 +385,16 @@ export async function createNewChatWithCarryover(): Promise<boolean> {
       timeStart: seedTime || undefined,
       createdAt: Date.now(),
       seed: true, // 种子叶子:承载旧对话合并总结,不进向量库(见 index.ts collectLeaves + LeafExtra.seed 注释)
+      swipe: anchor.swipe_id ?? 0,
       v: 1,
     };
     anchor.extra = { ...(anchor.extra ?? {}), bbs_leaf: seedLeaf };
+    if (seedFacts.length) writeMessageKeyFacts(anchor, seedFacts, seedLeaf);
+    syncLeafSwipe(anchor);
 
     // 新对话森林:重置后放一条 L2 总结收纳种子叶子(承载合并摘要文本)。
     memory.summaries.splice(0, memory.summaries.length);
-    if (mergedSummary) {
+    if (mergedSummary || seedFacts.length) {
       const l2: MemSummary = {
         id: `sum_carry_${Date.now().toString(36)}`,
         text: mergedSummary,

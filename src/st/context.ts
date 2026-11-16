@@ -19,6 +19,7 @@ export interface STMessage {
   /** 消息私有数据。柏宝书在这里存隐藏、叶子摘要、收藏、番外与内部提示楼标记。 */
   extra?: Record<string, unknown> & {
     bbs_leaf?: import('@/memory/types').LeafExtra;
+    bbs_key_facts?: import('@/memory/types').SummaryKeyFactsExtra;
     bbs_hidden?: boolean;
     bbs_omit?: boolean;
     bbs_favorite?: import('@/favorites/store').FavoriteExtra;

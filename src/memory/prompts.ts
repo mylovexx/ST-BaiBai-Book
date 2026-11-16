@@ -910,7 +910,7 @@ export function resummary2Targets(contentLen: number): { min: number; max: numbe
  * 各自优先用对应的自定义模板,空则回退内置。字数随档位(详细/精简)切换。
  */
 export function buildResummaryPrompt(
-  a: Pick<BuildArgs, 'user' | 'char' | 'content'> & { level: number },
+  a: Pick<BuildArgs, 'user' | 'char' | 'content'> & { level: number; keyFacts?: string },
 ): { system: string; user: string } {
   const isSecond = a.level >= 2;
   const custom = isSecond
@@ -928,16 +928,21 @@ export function buildResummaryPrompt(
     // 兼容保存过旧版 {{target}} 的自定义模板;旧语义对应目标/最高字数。
     target: isSecond ? String(targets.max) : '',
   };
+  const factRule = a.keyFacts
+    ? '【人工关键事实】以下事实由程序原样保存并追加到总结尾部,仅供理解来源与核对叙事。与同一事件的正文矛盾时以事实为准;只生成叙事 summary,无需重复事实列表,不输出事实字段。字数预算仅约束叙事正文。'
+    : '';
+  const factReference = a.keyFacts ? `\n\n【人工关键事实只读参考(段号对应输入来源)】\n${a.keyFacts}` : '';
   if (custom && custom !== builtin.trim()) {
     // 与摘要同理,模板自带的段不重复补;两段都带时 system 为空,由调用方略过该消息
     const supplements: string[] = [];
     if (!custom.includes('【摘要时间语言铁律】')) supplements.push(RULE_ABSOLUTE_TIME_LANGUAGE);
     if (!custom.includes('【关系线保留】')) supplements.push(RULE_RELATION_MOMENTUM);
-    return { system: supplements.join('\n\n'), user: fill(custom, macros) };
+    if (factRule) supplements.push(factRule);
+    return { system: supplements.join('\n\n'), user: fill(custom, macros) + factReference };
   }
   return {
-    system: fill(isSecond ? RESUMMARY2_RULES : RESUMMARY_RULES, macros),
-    user: fill(isSecond ? RESUMMARY2_INPUT : RESUMMARY_INPUT, macros),
+    system: [fill(isSecond ? RESUMMARY2_RULES : RESUMMARY_RULES, macros), factRule].filter(Boolean).join('\n\n'),
+    user: fill(isSecond ? RESUMMARY2_INPUT : RESUMMARY_INPUT, macros) + factReference,
   };
 }
 

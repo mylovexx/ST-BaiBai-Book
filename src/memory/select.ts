@@ -11,6 +11,8 @@
  * 而旁支完好的子节点(如同层另一条 L1)整条保留。节点失活只是「当前不展示/不注入」,森林数据不删除。
  */
 
+import type { SummaryKeyFactView } from './types';
+
 /** 统一视图节点:叶子来自 chat 扫描,压缩节点来自森林,childIds 跨存储连接 */
 export interface ViewNode {
   id: string;
@@ -24,6 +26,10 @@ export interface ViewNode {
   childIds: string[]; // comp 才有
   msgIndex: number; // leaf 才有意义(排序键);comp 取 -1
   active: boolean; // leaf:所在消息已隐藏
+  /** 摘要已删除,仍保留独立事实;不能代表旧总结中的叙事。 */
+  factsOnly?: boolean;
+  /** 叶子自己的事实 / 总结动态继承的事实,仅为视图缓存。 */
+  keyFacts?: SummaryKeyFactView[];
   /** 无逐楼 child 的导入历史节点;选择算法把它视为与 leaf 同类的完整终端。 */
   atomic?: boolean;
   /** 原子导入历史的显式楼层范围。 */
@@ -54,7 +60,7 @@ export function selectViewNodes(
   // 完好:每个 childId 都能解析(无悬空)且子节点自身也完好;叶子恒完好。memoized。
   const intactMemo = new Map<string, boolean>();
   const isIntact = (n: ViewNode): boolean => {
-    if (n.kind === 'leaf' || n.atomic) return true;
+    if (n.kind === 'leaf' || n.atomic) return !n.factsOnly;
     const cached = intactMemo.get(n.id);
     if (cached !== undefined) return cached;
     intactMemo.set(n.id, false); // 防环:递归未归前先占位 false
@@ -95,16 +101,21 @@ export function selectViewNodes(
   for (const r of roots) visit(r);
 
   // 时间序拼接:叶子用楼层序;压缩节点用其最早后代叶子的楼层序
-  const sortKey = (n: ViewNode): number => {
-    if (n.kind === 'leaf') return n.msgIndex;
-    if (n.atomic) return n.floorStart ?? n.msgIndex;
-    const ls: ViewNode[] = [];
-    collectLeaves(n, ls);
-    return ls.length
-      ? Math.min(...ls.map(l => l.atomic ? (l.floorStart ?? l.msgIndex) : l.msgIndex))
-      : Number.MAX_SAFE_INTEGER;
-  };
-  return chosen.sort((a, b) => sortKey(a) - sortKey(b));
+  return chosen.sort((a, b) => viewNodeStartFloor(a, byId) - viewNodeStartFloor(b, byId));
+}
+
+/** 注入补入窗口内事实时仍沿用森林的楼层排序。 */
+export function viewNodeStartFloor(n: ViewNode, byId: Map<string, ViewNode>, seen = new Set<string>()): number {
+  if (seen.has(n.id)) return Number.MAX_SAFE_INTEGER;
+  seen.add(n.id);
+  if (n.kind === 'leaf') return n.msgIndex;
+  if (n.atomic) return n.floorStart ?? n.msgIndex;
+  let floor = Number.MAX_SAFE_INTEGER;
+  for (const id of n.childIds) {
+    const child = byId.get(id);
+    if (child) floor = Math.min(floor, viewNodeStartFloor(child, byId, seen));
+  }
+  return floor;
 }
 
 /* ============ 生活小档案:三投放层选择(纯函数,注入与测试共用) ============ */

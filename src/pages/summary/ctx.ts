@@ -5,6 +5,7 @@
  */
 import type { ComputedRef, InjectionKey, Ref } from 'vue';
 import type { ViewNode } from '@/memory/inject';
+import type { SummaryKeyFactView } from '@/memory/types';
 
 /** 一个森林节点在列表里的展示字段(toRow 的产物),供 helper 计算标签/时间用。 */
 export interface SummaryRow {
@@ -21,6 +22,8 @@ export interface SummaryRow {
   msgIndex?: number;
   stale?: boolean;
   imported?: boolean;
+  factsOnly?: boolean;
+  keyFacts: SummaryKeyFactView[];
 }
 
 export interface SummaryCtx {

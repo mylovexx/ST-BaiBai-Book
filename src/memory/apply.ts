@@ -11,7 +11,8 @@ import { scheduleVectorIndex } from './vector';
 import { invalidateRecallCache } from './vector/cache';
 import { applyConditionPatch, hasConditionPatchContent, stripConditionFragmentIds } from './conditionPatch';
 import { createEmptyMemory } from './types';
-import type { BaibaiMemory, ConditionPatch, ConditionPatchOp, ItemDelta, ItemLogEntry, JsonValue, LeafExtra, LifeDetailAdd, LifeDetailUpdate, MemLifeDetail, MemNpc, MemPlan, MemScene, MemSummary, NpcAffinity, NpcDelta, NpcPresence, PlanResolveItem, PlanUpdateItem, ProtagonistDelta, SceneDelta, SceneFocus, SceneOp, SceneReparent, StoredDelta, SummaryDelta, VarOp, VarTemplate, VarTier } from './types';
+import { removeMessageLeaf, syncKeyFactSource, syncLeafSwipe, writeMessageKeyFacts } from './keyFacts';
+import type { BaibaiMemory, ConditionPatch, ConditionPatchOp, ItemDelta, ItemLogEntry, JsonValue, LeafExtra, LifeDetailAdd, LifeDetailUpdate, MemLifeDetail, MemNpc, MemPlan, MemScene, MemSummary, NpcAffinity, NpcDelta, NpcPresence, PlanResolveItem, PlanUpdateItem, ProtagonistDelta, SceneDelta, SceneFocus, SceneOp, SceneReparent, StoredDelta, SummaryDelta, SummaryKeyFact, VarOp, VarTemplate, VarTier } from './types';
 
 // 供既有调用方继续从 apply 取在场类型;定义在 types.ts 与名册展示共用。
 export type { NpcPresence } from './types';
@@ -2296,11 +2297,11 @@ export function removeScene(path: string[]): boolean {
   return appendOpToLatestLeaf({ scenes: { ops: [{ op: 'remove', path: clean }] } });
 }
 
-/** 删除某条消息上的叶子(清 extra),然后级联删坏链 + 重算 + 落盘 */
+/** 删除叙事叶子后清理祖先链;独立事实继续留在消息上。 */
 export function deleteLeafAt(index: number): boolean {
   const chat = getContext()?.chat;
   if (!chat || !chat[index]?.extra?.bbs_leaf) return false;
-  delete (chat[index].extra as Record<string, unknown>).bbs_leaf;
+  removeMessageLeaf(chat[index]);
   recomputeDerived();
   pruneBrokenComps();
   scheduleLeafFlush();
@@ -2314,10 +2315,10 @@ export function deleteLeafAt(index: number): boolean {
  * 摘要字段不是 leafValid 的判据,编辑后叶子仍有效。
  * timeEnd 同步写进 delta.time(覆盖型当前状态,重放即生效);编辑后清掉旧的 timeLabel(已被起止取代)。
  */
-export function editLeafAt(index: number, text: string, timeStart: string, timeEnd: string): boolean {
+export function editLeafAt(index: number, text: string, timeStart: string, timeEnd: string, keyFacts?: SummaryKeyFact[]): boolean {
   const chat = getContext()?.chat;
   const leaf = getLeaf(chat?.[index]);
-  if (!chat || !leaf) return false;
+  if (!chat || !leaf || !leafValid(chat[index])) return false;
   leaf.text = text.trim();
   const s = timeStart.trim();
   const e = timeEnd.trim();
@@ -2330,6 +2331,9 @@ export function editLeafAt(index: number, text: string, timeStart: string, timeE
   else if (s) leaf.delta.time = s;
   else delete leaf.delta.time;
   chat[index].extra = { ...(chat[index].extra ?? {}), bbs_leaf: leaf };
+  if (keyFacts !== undefined) writeMessageKeyFacts(chat[index], keyFacts, leaf);
+  else syncKeyFactSource(chat[index], leaf);
+  syncLeafSwipe(chat[index]);
   recomputeDerived();
   scheduleLeafFlush();
   invalidateRecallCache(); // 摘要变了 → 召回结果会变,先失效再重算
@@ -2345,11 +2349,11 @@ export function editLeafAt(index: number, text: string, timeStart: string, timeE
  */
 export function editLeafFull(
   index: number,
-  patch: { text: string; timeStart: string; timeEnd: string; delta: StoredDelta },
+  patch: { text: string; timeStart: string; timeEnd: string; delta: StoredDelta; keyFacts?: SummaryKeyFact[] },
 ): boolean {
   const chat = getContext()?.chat;
   const leaf = getLeaf(chat?.[index]);
-  if (!chat || !leaf) return false;
+  if (!chat || !leaf || !leafValid(chat[index])) return false;
   leaf.text = patch.text.trim();
   const s = patch.timeStart.trim();
   const e = patch.timeEnd.trim();
@@ -2363,6 +2367,9 @@ export function editLeafFull(
   else delete delta.time;
   leaf.delta = delta;
   chat[index].extra = { ...(chat[index].extra ?? {}), bbs_leaf: leaf };
+  if (patch.keyFacts !== undefined) writeMessageKeyFacts(chat[index], patch.keyFacts, leaf);
+  else syncKeyFactSource(chat[index], leaf);
+  syncLeafSwipe(chat[index]);
   // 编辑改了 delta → 同步重写该楼正文的 <bbs_items>/<bbs_vars> 旁注(否则旁注停留在上次摘要的旧值),
   // 与 applyLeafForFloor 落叶时同口径:物品净变动以「本楼之前状态」为基准算 from→to,变量直接渲染命令。
   rewriteFloorTags(chat, index, delta);
@@ -2370,6 +2377,18 @@ export function editLeafFull(
   scheduleLeafFlush();
   invalidateRecallCache(); // 摘要正文/时间变了 → 失效旧召回
   scheduleVectorIndex(); // 正文变了 → docHash 变,防抖重 embed
+  return true;
+}
+
+/** 删除摘要后仍可维护已有事实,不重建叙事摘要或改变 delta。 */
+export function editKeyFactsAt(index: number, facts: SummaryKeyFact[]): boolean {
+  const message = getContext()?.chat?.[index];
+  if (!message) return false;
+  const leaf = leafValid(message) ? getLeaf(message) : undefined;
+  if (!writeMessageKeyFacts(message, facts, leaf)) return false;
+  recomputeDerived();
+  scheduleLeafFlush();
+  invalidateRecallCache();
   return true;
 }
 
@@ -2514,10 +2533,7 @@ export function deleteSummarySubtrees(rootIds: string[]): DeleteSummarySubtreesR
   let leaves = 0;
   if (chat && leafIds.size) {
     for (const message of chat) {
-      const leaf = getLeaf(message);
-      if (!leaf || !leafIds.has(leaf.id)) continue;
-      delete (message.extra as Record<string, unknown>).bbs_leaf;
-      leaves++;
+      if (removeMessageLeaf(message, leafIds)) leaves++;
     }
   }
 
@@ -2580,6 +2596,10 @@ export function pruneBrokenComps(): boolean {
   if (chat) {
     for (const m of chat) {
       if (leafIntact(m)) liveLeafIds.add(getLeaf(m)!.id);
+      for (const [swipe, info] of (m.swipe_info ?? []).entries()) {
+        const leaf = info?.extra?.bbs_leaf;
+        if (leaf?.id && leaf.delta && (leaf.swipe ?? 0) === swipe) liveLeafIds.add(leaf.id);
+      }
     }
   }
   const byId = new Map(memory.summaries.map(s => [s.id, s]));

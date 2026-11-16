@@ -20,14 +20,18 @@ import BbsSelect from '@/components/BbsSelect.vue';
 import { NPC_AFFINITY_FIELDS, affinityLevelFromInput, fmtNpcAffinity } from '@/memory/npcRelations';
 import ConfirmDialog from '@/components/ConfirmDialog.vue';
 import FavoriteEditor from '@/components/FavoriteEditor.vue';
+import KeyFactsEditor from '@/components/KeyFactsEditor.vue';
+import KeyFactsList from '@/components/KeyFactsList.vue';
 import { captureFavoriteTarget, favoriteSaving, favoriteTargetCurrent, isFavorite, type FavoriteTarget } from '@/favorites/store';
 import { getContext, type STMessage } from '@/st/context';
 import { toast } from '@/st/toast';
-import { getLeaf, leafValid, deleteLeafAt, editLeafFull, planContentById, describeVarOp } from '@/memory/apply';
+import { getLeaf, leafValid, deleteLeafAt, editKeyFactsAt, editLeafFull, planContentById, describeVarOp } from '@/memory/apply';
+import { getKeyFactSource, getMessageKeyFacts, keyFactViews } from '@/memory/keyFacts';
+import { refreshInjection } from '@/memory/inject';
 import { engineState, floorBackfillState, regenerateFloor, summarizeFloor } from '@/memory/engine';
 import { derivedMeta } from '@/memory/store';
 import { ui } from '@/state/ui';
-import type { LeafExtra, StoredDelta, ItemDelta, NpcDelta, ProtagonistDelta, ConditionPatch, VarOp, JsonValue } from '@/memory/types';
+import type { LeafExtra, StoredDelta, ItemDelta, NpcDelta, ProtagonistDelta, ConditionPatch, VarOp, JsonValue, SummaryKeyFact } from '@/memory/types';
 
 const props = defineProps<{ floor: number; sig: { tick: number } }>();
 
@@ -60,6 +64,17 @@ const valid = computed(() => {
   return leafValid(msg.value);
 });
 const d = computed<StoredDelta | null>(() => leaf.value?.delta ?? null);
+const facts = computed(() => {
+  void props.sig.tick;
+  void derivedMeta.rev;
+  return getMessageKeyFacts(msg.value);
+});
+const factViews = computed(() => keyFactViews(facts.value, getKeyFactSource(msg.value)?.leafId ?? leaf.value?.id ?? '', props.floor));
+const factDraft = ref<SummaryKeyFact[]>([]);
+const originalFactDraft = ref('[]');
+const originalTextDraft = ref('');
+const factTarget = shallowRef<FavoriteTarget | null>(null);
+const factSwipe = ref(0);
 
 const expanded = ref(false);
 const favoriteEditing = shallowRef<FavoriteTarget | null>(null);
@@ -95,9 +110,10 @@ const summaryActionTitle = computed(() => {
 const previewText = computed(() => {
   if (omit.value) return '不计入记忆';
   if (valid.value && leaf.value?.text) return leaf.value.text;
+  if (!valid.value && facts.value.length) return `关键事实 ${facts.value.length} 条 · 摘要已删除`;
   return valid.value ? '(无摘要正文)' : '待摘要';
 });
-const previewMuted = computed(() => omit.value || !(valid.value && leaf.value?.text));
+const previewMuted = computed(() => omit.value || (!(valid.value && leaf.value?.text) && !facts.value.length));
 
 const timeLabel = computed(() => {
   const l = leaf.value;
@@ -340,7 +356,7 @@ const edit = reactive<{
 
 // 叶子消失 / 番外时退出编辑
 watch([omit, leaf], () => {
-  if (editKey.value && (omit.value || !leaf.value)) editKey.value = null;
+  if (editKey.value && (omit.value || (!leaf.value && editKey.value !== 'facts'))) editKey.value = null;
 });
 
 // 触屏判定:移动端进入编辑不自动聚焦——自动 focus 会立刻弹出输入法,挡住界面。
@@ -386,6 +402,7 @@ function onFieldKeydown(e: KeyboardEvent) {
 }
 function cancelEdit() {
   editKey.value = null;
+  factTarget.value = null;
 }
 
 /** 克隆当前 delta,交给 mutator 改,再整体重放写回。 */
@@ -406,12 +423,44 @@ function commitDelta(mutate: (dd: StoredDelta) => void): void {
 /* —— 正文 —— */
 function editText() {
   edit.text = leaf.value?.text ?? '';
+  originalTextDraft.value = edit.text;
+  prepareFactDraft();
   beginEdit('text');
 }
 function saveText() {
   const l = leaf.value;
-  if (!l) return;
-  editLeafFull(props.floor, { text: edit.text, timeStart: l.timeStart ?? '', timeEnd: l.timeEnd ?? '', delta: l.delta ?? {} });
+  if (!l || !valid.value || !factTargetCurrent()) return;
+  const factsChanged = JSON.stringify(factDraft.value) !== originalFactDraft.value;
+  let saved = true;
+  if (edit.text !== originalTextDraft.value) {
+    saved = editLeafFull(props.floor, { text: edit.text, timeStart: l.timeStart ?? '', timeEnd: l.timeEnd ?? '', delta: l.delta ?? {}, keyFacts: factsChanged ? factDraft.value : undefined });
+  } else if (factsChanged) saved = editKeyFactsAt(props.floor, factDraft.value);
+  if (!saved) { toast('来源摘要已变化,请重新打开编辑', 'warning'); return; }
+  refreshInjection();
+  editKey.value = null;
+}
+
+function prepareFactDraft() {
+  factDraft.value = facts.value.map(fact => ({ ...fact }));
+  originalFactDraft.value = JSON.stringify(factDraft.value);
+  factTarget.value = captureFavoriteTarget(props.floor);
+  factSwipe.value = msg.value?.swipe_id ?? 0;
+}
+function factTargetCurrent(): boolean {
+  if (!factTarget.value || !favoriteTargetCurrent(factTarget.value) || (msg.value?.swipe_id ?? 0) !== factSwipe.value) {
+    toast('来源楼层或 swipe 已变化,请重新打开编辑', 'warning');
+    return false;
+  }
+  return true;
+}
+function editFacts() {
+  prepareFactDraft();
+  beginEdit('facts');
+}
+function saveFacts() {
+  if (!factTargetCurrent()) return;
+  if (!editKeyFactsAt(props.floor, factDraft.value)) { toast('来源摘要已变化,请重新打开编辑', 'warning'); return; }
+  refreshInjection();
   editKey.value = null;
 }
 
@@ -637,6 +686,7 @@ async function removeLeaf() {
   busy.value = true;
   try {
     deleteLeafAt(props.floor);
+    refreshInjection();
     editKey.value = null;
     confirmingDelete.value = false;
   } finally {
@@ -737,7 +787,7 @@ const groups = computed(() => [
           <div class="bbs-fp-drawer-body">
             <p v-if="omit" class="bbs-fp-note">此楼已标为番外,以下数据不参与记忆;取消番外即恢复。</p>
 
-            <template v-if="leaf">
+            <template v-if="leaf && valid">
               <!-- 时间 / 地点 chips(可点编辑) -->
               <div class="bbs-fp-chips">
                 <!-- 时间 -->
@@ -781,6 +831,7 @@ const groups = computed(() => [
               <template v-if="editKey === 'text'">
                 <div class="bbs-fp-texteditor">
                   <textarea :ref="setFocus" v-model="edit.text" class="bbs-input bbs-fp-textarea" rows="3" @input="onTextInput"></textarea>
+                  <KeyFactsEditor v-model="factDraft" />
                   <div class="bbs-fp-editrow-actions">
                     <button class="bbs-btn" type="button" @click="cancelEdit">取消</button>
                     <button class="bbs-btn bbs-btn-primary" type="button" @click="saveText">保存</button>
@@ -901,10 +952,25 @@ const groups = computed(() => [
 
             <p v-else class="bbs-summary-text bbs-fp-text is-muted">此楼尚无摘要。</p>
 
+            <div v-if="!omit && (valid || facts.length) && editKey !== 'text'">
+              <template v-if="editKey === 'facts'">
+                <KeyFactsEditor v-model="factDraft" :allow-add="valid" />
+                <div class="bbs-fp-editrow-actions">
+                  <button class="bbs-btn" type="button" @click="cancelEdit">取消</button>
+                  <button class="bbs-btn bbs-btn-primary" type="button" @click="saveFacts">保存事实</button>
+                </div>
+              </template>
+              <template v-else>
+                <KeyFactsList :facts="factViews" :expanded="!valid" />
+                <button class="bbs-btn bbs-btn-sm" type="button" @click="editFacts">{{ facts.length ? '编辑关键事实' : '添加关键事实' }}</button>
+                <p v-if="!valid" class="bbs-field-hint">关键事实独立保留;新增事实请先生成摘要。</p>
+              </template>
+            </div>
+
             <!-- 页脚:删除整楼摘要(行内两步确认,防误触) -->
-            <div v-if="leaf && !omit" class="bbs-fp-footer">
+            <div v-if="valid && !omit" class="bbs-fp-footer">
               <template v-if="confirmingDelete">
-                <span class="bbs-fp-confirm-text">删除此楼摘要?</span>
+                <span class="bbs-fp-confirm-text">删除此楼摘要?关键事实仍保留。</span>
                 <button class="bbs-fp-confirm-cancel" type="button" :disabled="busy" @click="cancelDelete">取消</button>
                 <button class="bbs-fp-confirm-ok" type="button" :disabled="busy" @click="removeLeaf">
                   <Icon name="trash" />删除
@@ -929,6 +995,7 @@ const groups = computed(() => [
       @confirm="confirmRegenerate"
     >
       当前摘要将被新结果替换,该楼带来的时间、物品、角色、计划等记忆会重新计算。
+      关键事实原样保留。
       如果该楼已被上层总结收纳,包含它的上层总结将失效并被移除。继续?
     </ConfirmDialog>
   </div>

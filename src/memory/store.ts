@@ -4,12 +4,14 @@ import { reactive } from 'vue';
 import { deriveMemory, getLeaf, leafValid } from './apply';
 import { isAiFloor, pendingAiFloors } from './engine';
 import { latestStoryTime } from './timeTag';
-import type { BaibaiMemory, LeafExtra, MemSummary, StoredDelta, VarTemplate, VarTier } from './types';
+import { getKeyFactSource } from './keyFacts';
+import type { BaibaiMemory, LeafExtra, MemSummary, StoredDelta, SummaryKeyFact, VarTemplate, VarTier } from './types';
 import { createEmptyMemory, MEMORY_KEY, MEMORY_VERSION, normalizeTemplate } from './types';
 
 /**
  * 响应式记忆镜像。
- * 真源:① 压缩节点森林 = chat_metadata[MEMORY_KEY].summaries;② 叶子 = chat 各消息 extra.bbs_leaf。
+ * 真源:① 压缩节点森林 = chat_metadata[MEMORY_KEY].summaries;② 叶子 = chat 各消息 extra.bbs_leaf;
+ * ③ 独立事实 = 消息 extra.bbs_key_facts,删除叶子后仍可通过事实来源视图管理。
  * state / items / plans 是从 chat 重放出的派生缓存,供 Vue 渲染。
  */
 export const memory = reactive<BaibaiMemory>(createEmptyMemory());
@@ -29,6 +31,8 @@ export interface LeafView {
   msgIndex: number;
   active: boolean; // 所在消息已隐藏(is_system)
   stale: boolean; // 正文已变、尚未重摘
+  factsOnly?: boolean;
+  keyFacts: SummaryKeyFact[];
 }
 export const derivedMeta = reactive<{ hasLeaf: boolean; leaves: LeafView[]; pendingFloors: number[]; latestStoryTime: string; rev: number }>({
   hasLeaf: false,
@@ -84,8 +88,18 @@ export function recomputeDerived(): void {
       const m = chat[i];
       if (m?.extra?.bbs_omit) continue; // 番外楼:不进摘要页叶子列表
       const leaf = getLeaf(m);
-      if (!leaf) continue;
       const valid = leafValid(m);
+      const source = getKeyFactSource(m);
+      if (!leaf && !source) continue;
+      if (!valid && source) {
+        leaves.push({
+          id: source.leafId, text: '', keyFacts: source.facts, factsOnly: true,
+          timeStart: source.timeStart, timeEnd: source.timeEnd, timeLabel: source.timeLabel,
+          createdAt: source.createdAt, msgIndex: i, active: m.is_system === true, stale: false,
+        });
+        continue;
+      }
+      if (!leaf) continue;
       leaves.push({
         id: leaf.id,
         text: scalarText(leaf.text),
@@ -96,11 +110,12 @@ export function recomputeDerived(): void {
         msgIndex: i,
         active: m.is_system === true,
         stale: !valid,
+        keyFacts: valid ? source?.facts ?? [] : [],
       });
     }
   }
   derivedMeta.leaves = leaves;
-  derivedMeta.hasLeaf = leaves.some(l => !l.stale);
+  derivedMeta.hasLeaf = leaves.some(l => !l.stale && !l.factsOnly);
   derivedMeta.latestStoryTime = latestStoryTime(chat);
   // 待摘要楼层(AI 楼且无有效叶子),供摘要页「未摘要楼层」列表逐楼补摘
   derivedMeta.pendingFloors = chat ? pendingAiFloors(chat) : [];

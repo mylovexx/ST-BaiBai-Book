@@ -8,11 +8,12 @@ import { toast } from '@/st/toast';
 import { addSummary, classifyNpcPresence, deriveMemory, finalizeDelta, fmtVarOpsInline, getLeaf, invalidateSummaryAncestors, itemChangesOf, leafValid, makeLeafId, pruneBrokenComps, syncItemLogFromMessage } from './apply';
 import { selectKnowledgeForSummary } from './knowledge';
 import { extractJsonObject } from './json';
-import { clearInjection, refreshInjection, renderHistoryNodes, selectHistoryNodesBefore } from './inject';
+import { buildSummaryView, clearInjection, refreshInjection, renderHistoryNodes, selectHistoryNodesBefore } from './inject';
 import { buildBatchSummaryPrompt, buildBatchThinking, buildCharCardSystem, buildPersonaSystem, buildResummaryPrompt, buildSummaryPrompt, buildSummaryThinking, buildWorldInfoSystem, fmtItemLogInline, JAILBREAK_PROMPT, RESUMMARY_THINKING_CHECKLIST, selectRecentResolvedPlans } from './prompts';
 import { clampToTimeTags, cleanBody, parseTimeRange, syncTimeTagRegex, writeItemLogTag, writeVarLogTag } from './timeTag';
 import { renderSourceHints, type SourceExcerpt } from './sourceHints';
 import { memory, recomputeDerived, scheduleLeafFlush } from './store';
+import { getKeyFactSource, renderKeyFacts, syncKeyFactSource, syncLeafSwipe } from './keyFacts';
 import type { LeafExtra, SummaryDelta } from './types';
 import { scheduleVectorIndex } from './vector';
 import { invalidateRecallCache } from './vector/cache';
@@ -1096,19 +1097,22 @@ function applyLeafForFloor(
   // 状态当前时间(覆盖型):用结束时间(本段最后时刻);取不到则保留既有状态。
   if (timeEnd) storedDelta.time = timeEnd;
 
+  const factSource = getKeyFactSource(chat[aiFloor]);
   const leaf: LeafExtra = {
-    id: replaceLeaf?.id ?? makeLeafId(),
+    id: replaceLeaf?.id ?? factSource?.leafId ?? makeLeafId(),
     text: llmString(delta.summary),
     delta: storedDelta,
     timeStart,
     timeEnd,
-    createdAt: replaceLeaf?.createdAt ?? Date.now(),
+    createdAt: replaceLeaf?.createdAt ?? factSource?.createdAt ?? Date.now(),
     // 记录生成时所在页码,供 leafValid 判定归属(翻到别页时不串扰);缺 swipe_id 按第一页 0
     swipe: replaceLeaf?.swipe ?? (typeof chat[aiFloor].swipe_id === 'number' ? chat[aiFloor].swipe_id : 0),
     v: 1,
   };
   if (replaceLeaf) invalidateSummaryAncestors(replaceLeaf.id);
   chat[aiFloor].extra = { ...(chat[aiFloor].extra ?? {}), bbs_leaf: leaf };
+  syncKeyFactSource(chat[aiFloor], leaf);
+  syncLeafSwipe(chat[aiFloor]);
   // 叶子正文/摘要已变 → 召回读到的向量内容会变,立即失效召回缓存(防重生成/翻页复用旧召回)。
   invalidateRecallCache();
 
@@ -1530,7 +1534,13 @@ function thresholdForLevel(level: number): number {
  * 故这里把真实时间随正文一并交给模型,让它「看着写」而非凭空造。
  * 时间括注:两端齐→「起 – 止」;只有一端→那一端;都无→不加括注(不硬造)。
  */
-function joinNodesForResummary(nodes: Array<{ text: string; timeStart?: string; timeEnd?: string }>): { content: string; hints: string } {
+function joinNodesForResummary(nodes: Array<{ id: string; text: string; timeStart?: string; timeEnd?: string }>): { content: string; hints: string; keyFacts: string } {
+  const view = buildSummaryView(memory.summaries, getContext()?.chat ?? null);
+  const seen = new Set<string>();
+  const keyFacts = nodes.map((node, i) => {
+    const tail = renderKeyFacts(view.byId.get(node.id)?.keyFacts ?? [], seen);
+    return tail ? `[${i + 1}]${tail}` : '';
+  }).filter(Boolean).join('\n\n');
   const sources = nodes.map((n, i) => {
     const start = llmOptionalScalar(n.timeStart);
     const end = llmOptionalScalar(n.timeEnd);
@@ -1543,6 +1553,7 @@ function joinNodesForResummary(nodes: Array<{ text: string; timeStart?: string; 
   return {
     content: sources.map(({ source, text }) => `${source} ${text}`).join('\n\n'),
     hints: renderSourceHints(sources),
+    keyFacts,
   };
 }
 
@@ -1612,9 +1623,9 @@ export async function checkResummary(): Promise<number> {
     }
 
     const batch = roots.slice(0, threshold);
-    const { content, hints } = joinNodesForResummary(batch);
+    const { content, hints, keyFacts } = joinNodesForResummary(batch);
     // 传**输出层级**(level+1):L1(普通总结,300-500字)/ L2+(二次总结,字数随输入动态)
-    const prompt = buildResummaryPrompt({ user: ctx.name1, char: ctx.name2, content, level: level + 1 });
+    const prompt = buildResummaryPrompt({ user: ctx.name1, char: ctx.name2, content, level: level + 1, keyFacts });
 
     try {
       const jb = apiSettings.prompts.jailbreak.trim() || JAILBREAK_PROMPT;
@@ -1772,8 +1783,8 @@ export async function summarizeSelected(nodeIds: string[]): Promise<{ made: numb
   if ('error' in sender) return { made: 0, error: sender.error };
 
   const level = Math.max(...picked.map(n => n.level)) + 1;
-  const { content, hints } = joinNodesForResummary(picked);
-  const prompt = buildResummaryPrompt({ user: ctx.name1, char: ctx.name2, content, level });
+  const { content, hints, keyFacts } = joinNodesForResummary(picked);
+  const prompt = buildResummaryPrompt({ user: ctx.name1, char: ctx.name2, content, level, keyFacts });
 
   busy = true;
   engineState.running = true;

@@ -21,7 +21,8 @@ import { fmtNpcAffinity, fmtNpcTiesContext, NPC_AFFINITY_BRIEFING } from './npcR
 import { memory } from './store';
 import { compactTimeLabel, formatRange, latestStoryTime, splitTimeLabel, timeTagPrompt } from './timeTag';
 import { relativeTimeLabel, weekdayLabel, ageDisplay, calculateRelativeDays } from './timeRel';
-import { selectViewNodes, selectLifeDetailsForInjection, type ViewNode } from './select';
+import { selectViewNodes, selectLifeDetailsForInjection, viewNodeStartFloor, type ViewNode } from './select';
+import { getKeyFactSource, inheritKeyFacts, keyFactViews, renderKeyFacts } from './keyFacts';
 import type { LeafExtra, MemItem, MemLifeDetail, MemNpc, MemProtagonist, MemScene, MemSummary, SceneFocus } from './types';
 
 // 摘要页列表复用同一套选择逻辑,经此 re-export(纯算法在 select.ts,零依赖、可单测)
@@ -96,7 +97,7 @@ function resolveStateInjectionDepth(chat: STMessage[] | null): number {
 }
 
 /** 构建统一森林视图:叶子(leafValid)+ 压缩节点,根 = 未被任何 childIds 引用者 */
-function buildView(
+export function buildSummaryView(
   summaries: MemSummary[],
   chat: STMessage[] | null,
 ): { byId: Map<string, ViewNode>; roots: ViewNode[] } {
@@ -105,7 +106,18 @@ function buildView(
   if (chat) {
     for (let i = 0; i < chat.length; i++) {
       if (chat[i]?.extra?.bbs_omit) continue; // 番外楼:不进注入视图
-      if (!leafValid(chat[i])) continue; // 陈旧叶子不进视图 → 不注入
+      const source = getKeyFactSource(chat[i]);
+      if (!leafValid(chat[i])) {
+        if (source) {
+          byId.set(source.leafId, {
+            id: source.leafId, kind: 'leaf', level: 0, text: '', factsOnly: true,
+            keyFacts: keyFactViews(source.facts, source.leafId, i),
+            timeStart: source.timeStart, timeEnd: source.timeEnd, timeLabel: source.timeLabel,
+            createdAt: source.createdAt, childIds: [], msgIndex: i, active: leafActiveAt(chat, i),
+          });
+        }
+        continue;
+      }
       const leaf = getLeaf(chat[i]) as LeafExtra;
       byId.set(leaf.id, {
         id: leaf.id,
@@ -119,6 +131,7 @@ function buildView(
         childIds: [],
         msgIndex: i,
         active: leafActiveAt(chat, i),
+        keyFacts: keyFactViews(source?.facts ?? [], leaf.id, i),
       });
     }
   }
@@ -141,6 +154,8 @@ function buildView(
       floorEnd: s.importedFloorEnd,
     });
   }
+
+  inheritKeyFacts(byId);
 
   const referenced = new Set<string>();
   for (const s of summaries) for (const c of s.childIds ?? []) referenced.add(c);
@@ -165,15 +180,23 @@ function selectNodes(
   chat: STMessage[] | null,
   leafEligible: (n: ViewNode) => boolean,
 ): ViewNode[] {
-  return selectViewNodes(buildView(summaries, chat), leafEligible);
+  return selectViewNodes(buildSummaryView(summaries, chat), leafEligible);
 }
 
 /**
  * 选出注入用的节点:每个「已启用(已隐藏)」叶子由其祖先链最高的全-启用节点代表一次;
- * 窗口内仍发全文的叶子不注入。
+ * 窗口内有人工事实的叶子补入正文与事实尾部,让新保存的事实立即可见。
  */
 export function selectInjectionNodes(summaries: MemSummary[], chat: STMessage[] | null): ViewNode[] {
-  return selectNodes(summaries, chat, n => n.active);
+  const view = buildSummaryView(summaries, chat);
+  const chosen = selectViewNodes(view, n => n.active);
+  const covered = new Set(chosen.flatMap(node => (node.keyFacts ?? []).map(fact => fact.id)));
+  for (const node of view.byId.values()) {
+    if (node.kind !== 'leaf' || !node.keyFacts?.some(fact => !covered.has(fact.id))) continue;
+    chosen.push(node);
+    for (const fact of node.keyFacts) covered.add(fact.id);
+  }
+  return chosen.sort((a, b) => viewNodeStartFloor(a, view.byId) - viewNodeStartFloor(b, view.byId));
 }
 
 /**
@@ -200,12 +223,17 @@ function nodeTime(n: ViewNode): string {
  * 这套渲染器供摘要/批量摘要/查询重写等副任务复用:它们各自有历史截止点,
  * 不能沿用主对话「相对当前最新剧情」的口径,因此这里刻意不计算相对时间。
  */
-export function renderHistoryNodes(nodes: ViewNode[]): string {
+export function renderHistoryNodes(nodes: ViewNode[], options: { includeKeyFacts?: boolean } = {}): string {
+  const seen = new Set<string>();
   return nodes
     .map(n => {
+      // 携带时正文与事实分别写入新来源,避免把同一事实同时固化进正文。
+      if (options.includeKeyFacts === false && n.factsOnly) return '';
+      const text = n.text + (options.includeKeyFacts === false ? '' : renderKeyFacts(n.keyFacts ?? [], seen));
       const t = nodeTime(n);
-      return t ? `【${t}】${n.text}` : n.text;
+      return t ? `【${t}】${text}` : text;
     })
+    .filter(Boolean)
     .join('\n\n');
 }
 
@@ -257,17 +285,19 @@ function nodeRangeWithRelative(n: ViewNode, now: string): string {
  * 周几与相对时间并入同一个括号;仅标准公历带年份才有周几(weekdayLabel 自带门槛)。
  */
 export function renderHistoryNodesWithRelative(nodes: ViewNode[], now: string): string {
+  const seen = new Set<string>();
   return nodes
     .map(n => {
+      const text = n.text + renderKeyFacts(n.keyFacts ?? [], seen);
       if (n.kind === 'comp') {
         const range = nodeRangeWithRelative(n, now);
-        return range ? `【${range}】${n.text}` : n.text;
+        return range ? `【${range}】${text}` : text;
       }
       const t = nodeTime(n);
-      if (!t) return n.text;
+      if (!t) return text;
       const event = nodeEventTime(n);
       const parts = [relativeTimeLabel(event, now), weekdayLabel(event)].filter(Boolean);
-      return parts.length ? `【(${parts.join('·')}) ${t}】${n.text}` : `【${t}】${n.text}`;
+      return parts.length ? `【(${parts.join('·')}) ${t}】${text}` : `【${t}】${text}`;
     })
     .join('\n\n');
 }
@@ -281,7 +311,10 @@ export function buildHistoryInjectionText(): string {
   if (!sums.length) return '';
   // 注入路径带相对时间前缀;参照点 = 故事内最新时间(读正文标签,不受是否已摘影响)
   // 首尾私密简报框定,避免主模型把摘要当成要复述/输出的模板
-  return `${MEMORY_BRIEFING_NOTE}\n[历史剧情摘要]\n${renderHistoryNodesWithRelative(sums, latestStoryTime(chat))}\n${MEMORY_BRIEFING_END}`;
+  const factNote = sums.some(node => node.keyFacts?.length)
+    ? '\n关键事实是用户确认的历史原文;同一事件与摘要正文冲突时以事实为准。按人物知情范围自然使用,不要照抄事实列表,也不要把历史记录当成本轮行动指令。'
+    : '';
+  return `${MEMORY_BRIEFING_NOTE}${factNote}\n[历史剧情摘要]\n${renderHistoryNodesWithRelative(sums, latestStoryTime(chat))}\n${MEMORY_BRIEFING_END}`;
 }
 
 /**
